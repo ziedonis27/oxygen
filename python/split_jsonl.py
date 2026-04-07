@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Sadala visus JSONL failus pašreizējā mapē daļās < 2 MB (noklusējums).
 Lietošana:
@@ -69,6 +69,7 @@ def split_jsonl(input_path: str, max_mb: float, output_dir: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Sadala JSONL failus mazakos.")
+    parser.add_argument("--folder", default=None, help="Darba mape")
     parser.add_argument("--max-mb", type=float, default=2.0,
                         help="Maks. izmers MB vienai dalai (noklusejums: 2.0)")
     parser.add_argument("--output-dir", default=None,
@@ -76,7 +77,7 @@ def main():
     args = parser.parse_args()
 
     # Mekle JSONL failus tur, kur scripts atrodas
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = args.folder if hasattr(args,'folder') and args.folder else os.path.dirname(os.path.abspath(__file__))
     jsonl_files = glob.glob(os.path.join(script_dir, "*.jsonl"))
 
     # Izfiltre jau sadalitas dalas (lai netiktu apstradatas atkartoti)
@@ -99,3 +100,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

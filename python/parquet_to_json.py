@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Konvertē visus Parquet failus pašreizējā mapē uz JSON.
 Lietošana:
@@ -55,13 +55,14 @@ def convert_parquet(input_path: str, output_dir: str, indent: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Konverte Parquet failus uz JSON.")
+    parser.add_argument("--folder", default=None, help="Darba mape")
     parser.add_argument("--output-dir", default=None,
                         help="Izvades mape (noklusejums: ta pati mape kur parquet fails)")
     parser.add_argument("--indent", type=int, default=2,
                         help="JSON atkape (noklusejums: 2, 0 = kompakts)")
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = args.folder if args.folder else os.path.dirname(os.path.abspath(__file__))
     parquet_files = glob.glob(os.path.join(script_dir, "*.parquet"))
 
     if not parquet_files:

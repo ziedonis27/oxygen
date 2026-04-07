@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Apvieno vairākus Alpaca JSON failus vienā, izlaižot dublējumus.
 Ievieto merge_alpaca.py tajā pašā mapē kur Alpaca JSON faili un palaid:
@@ -30,7 +30,11 @@ def load_json(path: str):
 
 
 def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    import argparse as _ap
+    _p = _ap.ArgumentParser()
+    _p.add_argument("--folder", default=None)
+    _args, _ = _p.parse_known_args()
+    script_dir = _args.folder if _args.folder else os.path.dirname(os.path.abspath(__file__))
 
     # Meklē visus .json failus izņemot jau merged
     json_files = glob.glob(os.path.join(script_dir, "*.json"))

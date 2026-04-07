@@ -4,7 +4,9 @@ Variāciju ģenerators — izmanto Claude API lai ģenerētu jaunas variācijas
 no esošiem dataset ierakstiem.
 
 Lietošana:
-    python generate_variations.py --input fails.json --api-key sk-ant-... --count 5
+    python generate_variations.py --input fails.json --count 5
+
+API atslēga tiek nolasīta no ANTHROPIC_API_KEY vides mainīgā (drošāk).
 
 Nepieciešams:
     pip install anthropic
@@ -36,7 +38,7 @@ def load_file(path: str) -> list:
         if line:
             try:
                 records.append(json.loads(line))
-            except:
+            except Exception:
                 pass
     return records
 
@@ -120,7 +122,8 @@ def main():
     parser = argparse.ArgumentParser(description="Variāciju ģenerators ar Claude API")
     parser.add_argument("--input",      required=True,  help="Ievades JSON/JSONL fails")
     parser.add_argument("--output",     default="variations_output.json")
-    parser.add_argument("--api-key",    required=True,  help="Anthropic API atslēga")
+    # --api-key saglabāts savietojamībai, bet prioritāte ir ANTHROPIC_API_KEY vides mainīgajam
+    parser.add_argument("--api-key",    default="", help="Anthropic API atslēga (ieteicams izmantot ANTHROPIC_API_KEY)")
     parser.add_argument("--count",      type=int, default=3,  help="Variāciju skaits katram ierakstam")
     parser.add_argument("--max-source", type=int, default=100, help="Maks. avota ierakstu skaits (0=visi)")
     parser.add_argument("--style",      default="mixed",
@@ -128,6 +131,15 @@ def main():
                         help="Variāciju stils")
     parser.add_argument("--delay",      type=float, default=0.5, help="Pauze starp API izsaukumiem (s)")
     args = parser.parse_args()
+
+    # 🔐 API atslēga: vispirms vides mainīgais (drošāk), tad arguments
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or args.api_key.strip()
+    if not api_key:
+        print("Kludas: nav norādīta Anthropic API atslēga.")
+        print("Iespējas:")
+        print("  1. Iestatiet vides mainīgo: set ANTHROPIC_API_KEY=sk-ant-...")
+        print("  2. Norādiet argumentu: --api-key sk-ant-...")
+        sys.exit(1)
 
     if not os.path.exists(args.input):
         print(f"Kludas: fails nav atrasts: {args.input}")
@@ -144,7 +156,7 @@ def main():
         print(f"Izmanto: {args.max_source} nejauši izvēlēti ieraksti")
 
     styles_pool = ["rephrase", "harder", "simpler", "different"]
-    client = anthropic.Anthropic(api_key=args.api_key)
+    client = anthropic.Anthropic(api_key=api_key)
 
     results = []
     total = len(source) * args.count
@@ -154,6 +166,7 @@ def main():
     print(f"\nĢenerē {total} variācijas ({args.count} katram ierakstam)...")
     print(f"Stils: {args.style} | Pauze: {args.delay}s")
     print("=" * 50)
+    sys.stdout.flush()
 
     for i, rec in enumerate(source):
         instr, inp, out = get_text(rec)
@@ -163,7 +176,9 @@ def main():
         for v in range(args.count):
             style = args.style if args.style != "mixed" else random.choice(styles_pool)
             done += 1
-            print(f"  [{done}/{total}] Ieraksts {i+1}, variācija {v+1} ({style})...")
+            percent = int(done / total * 100) if total > 0 else 0
+            print(f"  [{done}/{total}] ({percent}%) Ieraksts {i+1}, variācija {v+1} ({style})...")
+            sys.stdout.flush()  # Reāllaika progress
 
             variation = generate_variation(client, instr, out, style)
 
@@ -178,7 +193,8 @@ def main():
 
     # Saglabā
     out_dir = os.path.dirname(os.path.abspath(args.output))
-    os.makedirs(out_dir, exist_ok=True)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
@@ -191,6 +207,7 @@ def main():
     print(f"Kludas     : {errors}")
     print(f"Izmērs     : {size_mb:.2f} MB")
     print(f"Pabeigts!")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

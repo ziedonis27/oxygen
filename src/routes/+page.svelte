@@ -1,18 +1,73 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
+  import { onMount } from "svelte";
+
+  const APP_VERSION = "1.2.4";
 
   // --- Main state ---
   let folder    = $state("");
-  let maxMb     = $state(5);
   let log       = $state("");
   let running   = $state(false);
-  let activeTab = $state("split");
+  let activeTab = $state("dash");
+  let showAbout = $state(false);
 
-  // --- Filter state ---
-  let filterFile     = $state("");
-  let filterDomain   = $state("nav");
-  let filterMinOut   = $state(50);
+  // --- Dashboard state ---
+  let dashData: any = $state(null);
+  let dashLoading   = $state(false);
+
+  // --- Scraper state ---
+  let scrapeUrl     = $state("");
+  let scrapeOutput  = $state("downloads");
+  let scrapeToken   = $state("");
+  let scrapeSplit   = $state("train");
+  let scrapeMaxRows = $state(0);
+  let scrapeRetries = $state(3);
+  let scrapeHistory = $state<string[]>([]);
+
+  // --- Analyze state ---
+  let parseFile     = $state("");
+
+  // --- Queue state ---
+  type QueueStatus = "pending" | "running" | "done" | "error" | "skipped";
+  type QueueStepType = "scrape" | "parse" | "filter" | "convert" | "merge" | "split" | "augment";
+
+  interface QueueStep {
+    id: string;
+    type: QueueStepType;
+    label: string;
+    icon: string;
+    status: QueueStatus;
+    config: any;
+    duration?: number;
+  }
+
+  let queueSteps: QueueStep[] = $state([]);
+  let queueRunning = $state(false);
+  let queueLog     = $state("");
+  let showAddStep  = $state(false);
+
+  const STEP_DEFAULTS: Record<QueueStepType, any> = {
+    scrape:  { label: "Scrape Dataset",  icon: "🌐", config: { url: "", split: "train" } },
+    parse:   { label: "Analyze Dataset", icon: "🧠", config: { inputFile: "" } },
+    filter:  { label: "Filter Samples",  icon: "🔍", config: { domain: "nav", removeDupes: true, requireCode: false } },
+    convert: { label: "Convert Alpaca",  icon: "🔄", config: {} },
+    merge:   { label: "Merge Files",     icon: "🔗", config: {} },
+    split:   { label: "Split Files",     icon: "✂️", config: { maxMb: 20, type: "json" } },
+    augment: { label: "Augment Data",    icon: "🤖", config: { count: 3, style: "mixed" } },
+  };
+
+  const QUEUE_PRESETS = [
+    { name: "Full Cycle", icon: "♻️", steps: ["scrape", "parse", "filter", "convert", "merge"] },
+    { name: "Quick Filter", icon: "⚡", steps: ["parse", "filter"] },
+    { name: "Modernize", icon: "✨", steps: ["convert", "merge", "augment"] },
+  ];
+
+  // --- Tab specific states ---
+  let maxMb         = $state(50);
+  let filterFile    = $state("");
+  let filterDomain  = $state("nav");
+  let filterMinOut  = $state(50);
   let filterMinInstr = $state(10);
   let filterMaxRec   = $state(0);
   let filterDupes    = $state(true);
@@ -21,24 +76,42 @@
   let filterInclude  = $state("");
   let filterExclude  = $state("");
 
-  // --- Smart Parse state ---
-  let parseFile = $state("");
+  let varFile       = $state("");
+  let varApiKey     = $state("");
+  let varCount      = $state(3);
+  let varMaxSource  = $state(100);
+  let varStyle      = $state("mixed");
+  let varDelay      = $state(0.5);
 
-  // --- Augment state ---
-  let varFile      = $state("");
-  let varApiKey    = $state("");
-  let varCount     = $state(3);
-  let varMaxSource = $state(50);
-  let varStyle     = $state("mixed");
-  let varDelay     = $state(0.5);
+  // --- Score state ---
+  let scoreFile      = $state("filtered_output.json");
+  let scoreMinScore  = $state(5);
+  let scoreTop       = $state(0);
+  let scoreStatsOnly = $state(false);
+  let scoreDist: any[] = $state([]);
+  let scoreAvg: number = $state(0);
+  let scoreTotal: number = $state(0);
+  let scoreFiltered: number = $state(0);
 
-  // --- Scraper state ---
-  let scrapeUrl     = $state("");
-  let scrapeToken   = $state("");
-  let scrapeSplit   = $state("train");
-  let scrapeMaxRows = $state(0);
-  let scrapeRetries = $state(3);
-  let scrapeHistory = $state<string[]>([]);
+  // --- Language state ---
+  let langFile      = $state("alpaca_merged.json");
+  let langSelected  = $state<string[]>(["en", "lv"]);
+  let langAutoMode  = $state(false);
+  let langStatsOnly = $state(false);
+  let langField     = $state("instruction");
+  let langStats: any[] = $state([]);
+  let langTotal: number = $state(0);
+  let langSaved: number = $state(0);
+
+  // --- Preview state ---
+  let prevFile     = $state("");
+  let prevData: any[] = $state([]);
+  let prevSearch   = $state("");
+  let prevPage     = $state(1);
+  let prevLimit    = $state(20);
+  let prevTotal    = $state(0);
+  let prevSelectedIds = $state<string[]>([]);
+  let prevExpandedId  = $state<string | null>(null);
 
   const DOMAINS = [
     { id: "nav",     label: "🔵 No filter"  },
@@ -47,8 +120,18 @@
     { id: "coding",  label: "💻 Coding"     },
     { id: "webdev",  label: "🌐 Web Dev"    },
     { id: "blender", label: "🎨 Blender"    },
-    { id: "zbrush",  label: "🗿 ZBrush"     },
     { id: "unreal",  label: "🎮 Unreal"     },
+  ];
+
+  const LANGUAGES = [
+    { id: "en", label: "English", flag: "🇺🇸" },
+    { id: "lv", label: "Latvian", flag: "🇱🇻" },
+    { id: "ru", label: "Russian", flag: "🇷🇺" },
+    { id: "de", label: "German",  flag: "🇩🇪" },
+    { id: "fr", label: "French",  flag: "🇫🇷" },
+    { id: "es", label: "Spanish", flag: "🇪🇸" },
+    { id: "it", label: "Italian", flag: "🇮🇹" },
+    { id: "jp", label: "Japanese", flag: "🇯🇵" },
   ];
 
   const VAR_STYLES = [
@@ -62,7 +145,6 @@
   const HF_EXAMPLES = [
     "iamtarun/python_code_instructions_18k_alpaca",
     "teknium/OpenHermes-2.5",
-    "HuggingFaceH4/ultrachat_200k",
     "Open-Orca/OpenOrca",
     "codeparrot/github-code",
   ];
@@ -70,10 +152,15 @@
   // --- Helpers ---
   function appendLog(text: string) { log += text + "\n"; }
   function clearLog() { log = ""; }
+  function setTab(id: string) { activeTab = id; clearLog(); }
 
   async function pickFolder() {
     const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === "string") folder = selected;
+    if (typeof selected === "string") {
+      folder = selected;
+      localStorage.setItem("oxygen_last_folder", folder);
+      loadDashboard();
+    }
   }
 
   async function pickFile(setter: (v: string) => void) {
@@ -82,517 +169,827 @@
       filters: [{ name: "JSON/JSONL", extensions: ["json", "jsonl"] }]
     });
     if (typeof selected === "string") {
-      const parts = selected.split("\\");
-      setter(parts.pop() || selected);
-      if (!folder) folder = parts.join("\\");
+       const parts = selected.split(/[\/\\]/);
+       setter(parts.pop() || selected);
+       if (!folder) folder = parts.join("\\");
     }
   }
 
-  async function run(command: string, args: Record<string, any> = {}) {
-    if (!folder.trim()) { appendLog("⚠️  Please select a working folder first!"); return; }
-    running = true;
-    clearLog();
-    appendLog(`🚀 Running: ${command}...`);
-    appendLog(`📁 Folder: ${folder}`);
-    appendLog("─".repeat(44));
+  onMount(() => {
+    const last = localStorage.getItem("oxygen_last_folder");
+    if (last) { folder = last; loadDashboard(); }
+  });
+
+  // --- Actions ---
+  async function loadDashboard() {
+    if (!folder) return;
+    dashLoading = true;
     try {
-      const result = await invoke(command, { folder: folder.trim(), ...args });
-      appendLog(result as string);
-      appendLog("─".repeat(44));
-      appendLog("✅ Done!");
-    } catch (e) {
-      appendLog(`❌ Error: ${e}`);
-    }
+      dashData = await invoke("get_dashboard_stats", { folder });
+    } catch (e) { appendLog(`❌ Dash Error: ${e}`); }
+    dashLoading = false;
+  }
+
+  async function checkEnv() {
+    if (!folder) return;
+    running = true; clearLog();
+    try {
+      const res = await invoke("check_env", { folder });
+      appendLog(res as string);
+    } catch (e) { appendLog(`❌ Env Error: ${e}`); }
+    running = false;
+  }
+
+  async function run(command: string, args: any = {}) {
+    if (!folder) { appendLog("⚠️ Select folder!"); return; }
+    running = true; clearLog();
+    appendLog(`🚀 Running: ${command}...`);
+    try {
+      const res = await invoke(command, { folder, ...args });
+      appendLog(res as string);
+      loadDashboard();
+    } catch (e) { appendLog(`❌ Error: ${e}`); }
     running = false;
   }
 
   async function runFilter() {
-    if (!folder.trim())     { appendLog("⚠️  Select a folder!"); return; }
-    if (!filterFile.trim()) { appendLog("⚠️  Select an input file!"); return; }
+    if (!filterFile) { appendLog("⚠️ Select file!"); return; }
+    run("filter_dataset", {
+      inputFile: filterFile, 
+      domain: filterDomain,
+      minOutput: filterMinOut, 
+      minInstr: filterMinInstr,
+      maxRecords: filterMaxRec, 
+      removeDupes: filterDupes,
+      requireCode: filterCode, 
+      format: filterFormat,
+      includeWords: filterInclude, 
+      excludeWords: filterExclude,
+      appendMode: true
+    });
+  }
+
+  async function runScore() {
+    if (!scoreFile) return;
     running = true; clearLog();
-    appendLog(`🔍 Filtering: ${filterFile}`);
-    appendLog(`📁 Folder: ${folder}`);
-    appendLog(`🎯 Domain: ${filterDomain} | Min output: ${filterMinOut} | Min instr: ${filterMinInstr}`);
-    appendLog("─".repeat(44));
+    appendLog(`⭐ Scoring: ${scoreFile}...`);
     try {
-      const result = await invoke("filter_dataset", {
-        folder, inputFile: filterFile, domain: filterDomain,
-        minOutput: filterMinOut, minInstr: filterMinInstr,
-        maxRecords: filterMaxRec, removeDupes: filterDupes,
-        requireCode: filterCode, format: filterFormat,
-        includeWords: filterInclude, excludeWords: filterExclude,
+      const res = await invoke("score_dataset", {
+        folder, 
+        inputFile: scoreFile,
+        minScore: scoreMinScore,
+        maxScore: 10,
+        top: scoreTop,
+        statsOnly: scoreStatsOnly
       });
-      appendLog(result as string);
-      appendLog("─".repeat(44));
-      appendLog("✅ Saved: filtered_output.json");
-    } catch (e) { appendLog(`❌ Error: ${e}`); }
+      const data = JSON.parse(res as string);
+      scoreDist = data.distribution;
+      scoreAvg = data.average;
+      scoreTotal = data.total;
+      scoreFiltered = data.saved;
+      appendLog("✅ Scoring complete!");
+    } catch (e) { appendLog(`❌ Score Error: ${e}`); }
     running = false;
+  }
+
+  function scoreColor(s: number) {
+    if (s >= 8) return "#68d391";
+    if (s >= 5) return "#f6ad55";
+    return "#fc8181";
+  }
+
+  async function runLangFilter() {
+    if (!langFile) return;
+    running = true; clearLog();
+    appendLog(`🌍 Analyzing languages: ${langFile}...`);
+    try {
+      const res = await invoke("filter_language", {
+        folder, 
+        inputFile: langFile,
+        lang: langSelected.join(","), 
+        field: langField,
+        statsOnly: langStatsOnly,
+        addField: langAutoMode
+      });
+      const data = JSON.parse(res as string);
+      langStats = data.stats;
+      langTotal = data.total;
+      langSaved = data.saved;
+      appendLog("✅ Language filtering complete!");
+    } catch (e) { appendLog(`❌ Lang Error: ${e}`); }
+    running = false;
+  }
+
+  function langColor(l: string) {
+    const colors: any = { en: "#4299e1", lv: "#9f7aea", ru: "#ed64a1", de: "#ed8936" };
+    return colors[l] || "#4a5568";
+  }
+
+  function toggleLang(id: string) {
+    if (langSelected.includes(id)) langSelected = langSelected.filter(x => x !== id);
+    else langSelected = [...langSelected, id];
   }
 
   async function runSmartParse() {
-    if (!folder.trim())    { appendLog("⚠️  Select a folder!"); return; }
-    if (!parseFile.trim()) { appendLog("⚠️  Select a file to analyze!"); return; }
-    running = true; clearLog();
-    appendLog(`🧠 Analyzing: ${parseFile}...`);
-    appendLog("─".repeat(44));
-    try {
-      const result = await invoke("smart_parse", { folder, inputFile: parseFile });
-      appendLog(result as string);
-    } catch (e) { appendLog(`❌ Error: ${e}`); }
-    running = false;
+    if (!parseFile) return;
+    run("smart_parse", { inputFile: parseFile });
   }
 
   async function runVariations() {
-    if (!folder.trim())    { appendLog("⚠️  Select a folder!"); return; }
-    if (!varFile.trim())   { appendLog("⚠️  Select an input file!"); return; }
-    if (!varApiKey.trim()) { appendLog("⚠️  Enter your Claude API key!"); return; }
-    running = true; clearLog();
-    const total = varMaxSource * varCount;
-    appendLog(`🤖 Generating ~${total} variations...`);
-    appendLog(`📄 File: ${varFile} | Source: ${varMaxSource} × ${varCount}`);
-    appendLog("─".repeat(44));
-    appendLog("⏳ Please wait — this may take several minutes...");
-    try {
-      const result = await invoke("generate_variations", {
-        folder, inputFile: varFile, apiKey: varApiKey,
-        count: varCount, maxSource: varMaxSource,
-        style: varStyle, delay: varDelay,
-      });
-      appendLog(result as string);
-      appendLog("✅ Saved: variations_output.json");
-    } catch (e) { appendLog(`❌ Error: ${e}`); }
-    running = false;
+    if (!varFile || !varApiKey) return;
+    run("generate_variations", {
+      inputFile: varFile, 
+      apiKey: varApiKey,
+      count: varCount, 
+      maxSource: varMaxSource,
+      style: varStyle, 
+      delay: varDelay
+    });
   }
 
   async function runScraper() {
-    if (!scrapeUrl.trim()) { appendLog("⚠️  Enter a URL or HuggingFace dataset ID!"); return; }
-    if (!folder.trim())    { appendLog("⚠️  Select an output folder!"); return; }
-    running = true; clearLog();
-    if (!scrapeHistory.includes(scrapeUrl)) {
-      scrapeHistory = [scrapeUrl, ...scrapeHistory].slice(0, 8);
-    }
-    appendLog(`🌐 Scraper started...`);
-    appendLog(`📡 URL: ${scrapeUrl}`);
-    appendLog(`📁 Output: ${folder}`);
-    if (scrapeMaxRows > 0) appendLog(`📊 Max rows: ${scrapeMaxRows}`);
-    appendLog("─".repeat(44));
-    appendLog("⏳ Downloading... (may take several minutes for large datasets)");
-    try {
-      const result = await invoke("scrape_dataset", {
-        folder, url: scrapeUrl, hfToken: scrapeToken,
-        split: scrapeSplit, maxRows: scrapeMaxRows, retries: scrapeRetries,
-      });
-      appendLog(result as string);
-      appendLog("─".repeat(44));
-      appendLog("✅ Download complete!");
-      appendLog(`💡 Next steps: Analyze → Filter → Convert to Alpaca → Merge → Train!`);
-    } catch (e) { appendLog(`❌ Error: ${e}`); }
-    running = false;
+    if (!scrapeUrl) return;
+    run("scrape_dataset", {
+      url: scrapeUrl, hfToken: scrapeToken,
+      split: scrapeSplit, maxRows: scrapeMaxRows, retries: scrapeRetries
+    });
+  }
+
+  async function exportLog() {
+    const path = await save({ defaultPath: "oxygen_log.txt" });
+    if (path) await invoke("write_file", { path, content: log });
   }
 </script>
 
 <main>
+  <!-- ABOUT MODAL -->
+  {#if showAbout}
+    <div class="modal-bg" onclick={() => showAbout = false}>
+      <div class="modal">
+        <div class="modal-logo">🐂</div>
+        <h2>Oxygen</h2>
+        <p class="modal-version">v{APP_VERSION} — ML Dataset Manager</p>
+        <div class="modal-info">
+          <div>🛠 Tauri + Svelte 5 + Python</div>
+          <div>📋 GPL v3.0 License</div>
+        </div>
+        <button class="modal-close" onclick={() => showAbout = false}>✕ Aizvērt</button>
+      </div>
+    </div>
+  {/if}
+
   <header>
-    <span class="logo">🐂</span>
-    <div class="header-text">
-      <h1>Oxygen</h1>
-      <span class="sub">ML Dataset Manager</span>
+    <div class="header-left">
+      <span class="logo">🐂</span>
+      <div class="header-text">
+         <h1>Oxygen</h1>
+         <span class="sub">ML Dataset Manager</span>
+      </div>
+    </div>
+    <div class="header-right">
+       <span class="version-badge">v{APP_VERSION}</span>
+       <button class="btn-about" onclick={() => showAbout = true}>ℹ️ Info</button>
     </div>
   </header>
 
-  <section class="folder-bar">
-    <input type="text" placeholder="Select working folder..." bind:value={folder} />
-    <button class="btn-pick" onclick={pickFolder} disabled={running}>📁 Folder</button>
+  <section class="folder-bar card-glass">
+    <div class="input-wrapper">
+      <span class="input-icon">📁</span>
+      <input type="text" placeholder="Select working folder..." bind:value={folder} />
+    </div>
+    <div class="folder-actions">
+      <button class="btn-primary" onclick={pickFolder} disabled={running}>📂 Folder</button>
+      <button class="btn-outline" onclick={checkEnv} disabled={running || !folder}>🛡️ Check Env</button>
+    </div>
   </section>
 
-  <nav class="tabs">
+  <nav class="tabs-nav card-glass">
     {#each [
-      { id: "scrape",  label: "🌐 Scraper"   },
-      { id: "split",   label: "✂️ Split"     },
-      { id: "convert", label: "🔄 Convert"   },
-      { id: "merge",   label: "🔗 Merge"     },
-      { id: "filter",  label: "🔍 Filter"    },
-      { id: "parse",   label: "🧠 Analyze"   },
-      { id: "augment", label: "🤖 Augment"   },
+      { id: "dash",    label: "📊 Dash"    },
+      { id: "scrape",  label: "🌐 Scrape"  },
+      { id: "parse",   label: "🧠 Analyze" },
+      { id: "filter",  label: "🔍 Filter"  },
+      { id: "score",   label: "⭐ Score"   },
+      { id: "lang",    label: "🌍 Lang"    },
+      { id: "convert", label: "🔄 Conv"    },
+      { id: "merge",   label: "🔗 Merge"   },
+      { id: "augment", label: "🤖 Aug"     },
     ] as tab}
-      <button
-        class="tab {activeTab === tab.id ? 'active' : ''} tab-{tab.id}"
-        onclick={() => { activeTab = tab.id; clearLog(); }}
-      >{tab.label}</button>
+      <button class="tab-btn {activeTab === tab.id ? 'active' : ''}" onclick={() => setTab(tab.id)}>{tab.label}</button>
     {/each}
   </nav>
 
   <section class="content">
 
+    <!-- DASHBOARD -->
+    {#if activeTab === "dash"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+           <div style="display:flex; align-items:center; gap:10px;">
+             <span style="font-size:24px;">📊</span>
+             <div>
+               <h2 style="margin:0">Repository Insights</h2>
+               <p class="card-sub" style="margin:0">Workspace statistics and file overview</p>
+             </div>
+           </div>
+           <button class="btn-square" style="background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2);" onclick={loadDashboard} disabled={dashLoading || !folder} title="Refresh Statistics">
+              {dashLoading ? "⏳" : "🔄"}
+           </button>
+        </div>
+
+        {#if dashData}
+           <div class="stat-grid">
+              <div class="stat-box blue">
+                <span class="stat-icon">📄</span>
+                <span class="stat-val">{dashData.total_files}</span>
+                <span class="stat-lbl">Source Files</span>
+              </div>
+              <div class="stat-box green">
+                <span class="stat-icon">🗂️</span>
+                <span class="stat-val">{dashData.total_records.toLocaleString()}</span>
+                <span class="stat-lbl">Total Samples</span>
+              </div>
+              <div class="stat-box purple">
+                <span class="stat-icon">💾</span>
+                <span class="stat-val">{dashData.total_size_mb.toFixed(1)} MB</span>
+                <span class="stat-lbl">Storage Use</span>
+              </div>
+           </div>
+           
+           {#if dashData.files && dashData.files.length > 0}
+             <div class="file-list-container card-glass-dark">
+                <h4 class="list-title">🗄️ RECENT FILES</h4>
+                <div class="file-table">
+                  {#each dashData.files.slice(0, 8) as f}
+                    <div class="file-item-row">
+                       <span class="file-name">📄 {f.name}</span>
+                       <span class="file-size">{f.size_mb.toFixed(2)} MB</span>
+                    </div>
+                  {/each}
+                </div>
+             </div>
+           {/if}
+        {:else if dashLoading}
+           <div class="loading-full">
+              <div class="spinner"></div>
+              <p>Analyzing repository structure...</p>
+           </div>
+        {:else}
+           <div class="welcome-hero">
+              <div class="hero-icon">🐂</div>
+              <h3>Ready to analyze?</h3>
+              <p>Pick a working folder above to unlock repository insights and start engineering your dataset.</p>
+              <button class="btn-primary" style="margin-top:20px;" onclick={pickFolder}>📂 Select Folder</button>
+           </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- SCRAPER -->
     {#if activeTab === "scrape"}
-      <div class="card filter-card">
-        <h2>🌐 Smart Dataset Scraper</h2>
-        <p class="hint" style="color:#a0aec0">Download datasets from HuggingFace, GitHub or direct URLs. Auto-detects format, retries on failure, anti-blocking headers.</p>
-        <div class="filter-section">
-          <span class="filter-label">📡 URL or HuggingFace Dataset ID</span>
-          <div class="url-row">
-            <input type="text" class="filter-input url-input"
-              placeholder="e.g. iamtarun/python_code_instructions_18k_alpaca or https://..."
-              bind:value={scrapeUrl} />
-          </div>
-          <div class="quick-links">
-            <span class="ql-label">⚡ Examples:</span>
-            {#each HF_EXAMPLES as ex}
-              <button class="ql-btn" onclick={() => scrapeUrl = ex}>{ex.split("/")[1]}</button>
-            {/each}
+      <div class="card-glass content-card">
+        <div class="card-header">
+           <h2>🌐 Cloud Dataset Hub</h2>
+           <p class="card-sub">Import from HuggingFace, URLs, or local repositories.</p>
+        </div>
+        <div class="form-grid">
+           <div class="form-row">
+              <span class="row-label">📡 Dataset ID / URL</span>
+              <input type="text" class="form-input" placeholder="e.g. opensat/blender-python" bind:value={scrapeUrl} />
+           </div>
+           <div class="form-row">
+              <span class="row-label">🔑 HF Token (Optional)</span>
+              <input type="password" class="form-input" placeholder="hf_..." bind:value={scrapeToken} />
+           </div>
+           <div class="quality-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <div class="input-col"><span>Split (train/test)</span><input type="text" bind:value={scrapeSplit} /></div>
+              <div class="input-col"><span>Max Rows (0=all)</span><input type="number" bind:value={scrapeMaxRows} /></div>
+           </div>
+        </div>
+        <button class="btn-action" onclick={runScraper} disabled={running || !scrapeUrl}>
+           🚀 Start Fetching
+        </button>
+      </div>
+    {/if}
+
+    <!-- ANALYZE -->
+    {#if activeTab === "parse"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>🧠 Smart Parse & Schema</h2>
+          <p class="card-sub">Automatically detect fields and data structures.</p>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <span class="row-label">📄 Source JSON</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" placeholder="Select file to analyze..." bind:value={parseFile} />
+              <button class="btn-square" onclick={() => pickFile(v => parseFile = v)}>📂</button>
+            </div>
           </div>
         </div>
-        {#if scrapeHistory.length > 0}
-          <div class="filter-section">
-            <span class="filter-label">🕐 History</span>
-            <div class="history-list">
-              {#each scrapeHistory as h}
-                <button class="history-btn" onclick={() => scrapeUrl = h}>
-                  <span class="hist-icon">📋</span>
-                  <span class="hist-url">{h.length > 55 ? h.slice(0,55) + "..." : h}</span>
-                </button>
+        <button class="btn-action" onclick={runSmartParse} disabled={running || !parseFile}>
+          🧠 Run Analysis
+        </button>
+      </div>
+    {/if}
+
+    <!-- SCORE -->
+    {#if activeTab === "score"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>⭐ Dataset Quality Scoring</h2>
+          <p class="card-sub">Evaluate records and filter by quality score (1-10)</p>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <span class="row-label">📄 Input file</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" placeholder="filtered_output.json" bind:value={scoreFile} />
+              <button class="btn-square" onclick={() => pickFile(v => scoreFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">📈 Min Score</span>
+            <div class="slider-group">
+              <input type="range" class="glass-slider" min="0" max="10" bind:value={scoreMinScore} />
+              <span class="badge" style="background:{scoreColor(scoreMinScore)}">{scoreMinScore}/10</span>
+            </div>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" bind:checked={scoreStatsOnly} />
+            <span>Statistics only (faster)</span>
+          </label>
+        </div>
+        <button class="btn-action" disabled={running || !scoreFile} onclick={runScore}>
+          {running ? "⏳ Processing..." : "⭐ Start Scoring"}
+        </button>
+
+        {#if scoreTotal > 0}
+          <div class="score-results card-glass-dark">
+            <div class="results-summary">
+              <div class="res-item"><span>Average</span><strong>{scoreAvg?.toFixed(2)}</strong></div>
+              <div class="res-item"><span>Records</span><strong>{scoreTotal}</strong></div>
+              <div class="res-item"><span>Saved</span><strong>{scoreFiltered}</strong></div>
+            </div>
+            <div class="score-bars">
+              {#each scoreDist as d}
+                <div class="bar-row">
+                  <span class="bar-lbl">{d.score}</span>
+                  <div class="bar-track"><div class="bar-fill" style="width:{d.pct}%;background:{scoreColor(d.score)}"></div></div>
+                  <span class="bar-pct">{d.pct.toFixed(0)}%</span>
+                </div>
               {/each}
             </div>
           </div>
         {/if}
-        <div class="filter-section">
-          <span class="filter-label">⚙️ Settings</span>
-          <div class="scrape-grid">
-            <label class="row-label sm">
-              <span>HF Token (private datasets)</span>
-              <input type="password" class="filter-input" style="width:160px" placeholder="hf_xxx..." bind:value={scrapeToken} />
-            </label>
-            <label class="row-label sm">
-              <span>Split</span>
-              <select class="scrape-select" bind:value={scrapeSplit}>
-                <option value="train">train</option>
-                <option value="test">test</option>
-                <option value="validation">validation</option>
-                <option value="all">all</option>
-              </select>
-            </label>
-            <label class="row-label sm">
-              <span>Max rows (0 = all)</span>
-              <input type="number" bind:value={scrapeMaxRows} min="0" style="width:80px" />
-            </label>
-            <label class="row-label sm">
-              <span>Retries</span>
-              <input type="number" bind:value={scrapeRetries} min="1" max="10" style="width:60px" />
-            </label>
-          </div>
-        </div>
-        <div class="shield-box">
-          <div class="shield-item">🔄 <span>User-Agent rotation</span></div>
-          <div class="shield-item">⏱️ <span>Retry with backoff</span></div>
-          <div class="shield-item">🔑 <span>HF Token support</span></div>
-          <div class="shield-item">📦 <span>Streaming mode</span></div>
-          <div class="shield-item">🐙 <span>GitHub raw URL</span></div>
-          <div class="shield-item">📡 <span>HF Datasets API</span></div>
-        </div>
-        <button class="btn-scrape" disabled={running || !scrapeUrl} onclick={runScraper}>
-          {running ? "⏳ Downloading..." : "🚀 Start Download"}
-        </button>
-        <p class="hint">File saved to your folder. Then: <strong>Analyze → Filter → Convert → Merge → Train!</strong></p>
-      </div>
-    {/if}
-
-    <!-- SPLIT -->
-    {#if activeTab === "split"}
-      <div class="card">
-        <h2>✂️ Split Files</h2>
-        <label class="row-label">
-          <span>Max size (MB)</span>
-          <input type="number" bind:value={maxMb} min="1" max="500" />
-        </label>
-        <div class="btn-row">
-          <button class="btn-action" disabled={running} onclick={() => run("split_jsonl", { maxMb })}>📄 Split JSONL</button>
-          <button class="btn-action" disabled={running} onclick={() => run("split_json",  { maxMb })}>📋 Split JSON</button>
-        </div>
-        <p class="hint">Splits large files into smaller chunks. Creates files named <code>_part0001</code>, <code>_part0002</code>, etc.</p>
-      </div>
-    {/if}
-
-    <!-- CONVERT -->
-    {#if activeTab === "convert"}
-      <div class="card">
-        <h2>🔄 Convert</h2>
-        <div class="btn-row">
-          <button class="btn-action" disabled={running} onclick={() => run("parquet_to_json")}>🗃️ Parquet → JSON</button>
-          <button class="btn-action btn-blue" disabled={running} onclick={() => run("convert_to_alpaca")}>🦙 → Alpaca Format</button>
-        </div>
-        <p class="hint"><strong>Parquet → JSON</strong> — converts .parquet files to JSON.<br/><strong>→ Alpaca</strong> — converts any format to <code>instruction / input / output</code>.</p>
-      </div>
-    {/if}
-
-    <!-- MERGE -->
-    {#if activeTab === "merge"}
-      <div class="card">
-        <h2>🔗 Merge Files</h2>
-        <button class="btn-action btn-blue" style="max-width:300px" disabled={running} onclick={() => run("merge_alpaca")}>🔗 Merge Alpaca Files</button>
-        <p class="hint">Merges all JSON files in the folder into one <code>alpaca_merged.json</code>, automatically removing duplicate instructions.</p>
       </div>
     {/if}
 
     <!-- FILTER -->
     {#if activeTab === "filter"}
-      <div class="card filter-card">
-        <h2>🔍 Dataset Filter</h2>
-        <div class="filter-row">
-          <span class="filter-label">📄 Input file</span>
-          <div class="file-pick-row">
-            <input type="text" class="filter-input" placeholder="file.json" bind:value={filterFile} />
-            <button class="btn-sm" onclick={() => pickFile(v => filterFile = v)}>📂</button>
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>🔍 Advanced Dataset Filter</h2>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <span class="row-label">📄 Source File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={filterFile} />
+              <button class="btn-square" onclick={() => pickFile(v => filterFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">🎯 Domain</span>
+            <div class="pill-grid">
+              {#each DOMAINS as d}
+                <button class="pill-btn {filterDomain === d.id ? 'active' : ''}" onclick={() => filterDomain = d.id}>{d.label}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="quality-inputs">
+             <div class="input-col"><span>Min instr.</span><input type="number" bind:value={filterMinInstr} /></div>
+             <div class="input-col"><span>Min output</span><input type="number" bind:value={filterMinOut} /></div>
           </div>
         </div>
-        <div class="filter-section">
-          <span class="filter-label">🎯 Domain</span>
-          <div class="domain-grid">
-            {#each DOMAINS as d}
-              <button class="domain-btn {filterDomain === d.id ? 'domain-active' : ''}" onclick={() => filterDomain = d.id}>{d.label}</button>
-            {/each}
-          </div>
-        </div>
-        <div class="filter-section">
-          <span class="filter-label">📊 Quality</span>
-          <div class="quality-grid">
-            <label class="row-label sm"><span>Min output (words)</span><input type="number" bind:value={filterMinOut} min="0" /></label>
-            <label class="row-label sm"><span>Min instruction</span><input type="number" bind:value={filterMinInstr} min="0" /></label>
-            <label class="row-label sm"><span>Max records (0=all)</span><input type="number" bind:value={filterMaxRec} min="0" /></label>
-          </div>
-        </div>
-        <div class="filter-section">
-          <span class="filter-label">⚙️ Options</span>
-          <div class="check-row">
-            <label class="check-label"><input type="checkbox" bind:checked={filterDupes} /><span>Remove duplicates</span></label>
-            <label class="check-label"><input type="checkbox" bind:checked={filterCode} /><span>Require code in output</span></label>
-          </div>
-        </div>
-        <div class="filter-section">
-          <span class="filter-label">✏️ Custom filters</span>
-          <div class="custom-grid">
-            <div class="custom-field"><span class="field-label">✅ Required words (comma-separated)</span><input type="text" class="filter-input" placeholder="svelte, $state" bind:value={filterInclude} /></div>
-            <div class="custom-field"><span class="field-label">❌ Excluded words (comma-separated)</span><input type="text" class="filter-input" placeholder="react, vue" bind:value={filterExclude} /></div>
-          </div>
-        </div>
-        <div class="filter-section">
-          <span class="filter-label">📦 Output format</span>
-          <div class="format-row">
-            {#each [{id:"alpaca",label:"🦙 Alpaca"},{id:"messages",label:"💬 Messages"},{id:"jsonl",label:"📄 JSONL"}] as f}
-              <button class="fmt-btn {filterFormat === f.id ? 'fmt-active' : ''}" onclick={() => filterFormat = f.id}>{f.label}</button>
-            {/each}
-          </div>
-        </div>
-        <button class="btn-filter" disabled={running} onclick={runFilter}>{running ? "⏳ Filtering..." : "🔍 Filter Dataset"}</button>
-        <p class="hint">Result saved as → <code>filtered_output.json</code></p>
+        <button class="btn-action" onclick={runFilter} disabled={running}>🔍 Run Filter</button>
       </div>
     {/if}
 
-    <!-- SMART PARSE -->
-    {#if activeTab === "parse"}
-      <div class="card">
-        <h2>🧠 Smart Parse — Dataset Analyzer</h2>
-        <p class="hint" style="color:#a0aec0">Auto-detects JSON format, analyzes field structure, word count distribution, language, duplicates, and recommends optimal filter settings.</p>
-        <div class="filter-row">
-          <span class="filter-label">📄 File to analyze</span>
-          <div class="file-pick-row">
-            <input type="text" class="filter-input" placeholder="file.json or file.jsonl" bind:value={parseFile} />
-            <button class="btn-sm" onclick={() => pickFile(v => parseFile = v)}>📂</button>
+    <!-- LANG FILTER -->
+    {#if activeTab === "lang"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>🌍 Language Detection & Filter</h2>
+          <p class="card-sub">Identify languages and split datasets by locale</p>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <span class="row-label">📄 Input file</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={langFile} />
+              <button class="btn-square" onclick={() => pickFile(v => langFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">🌐 Keep Languages</span>
+            <div class="pill-grid">
+              {#each ["en", "lv", "ru", "de", "fr", "es", "auto"] as l}
+                <button class="pill-btn {langSelected.includes(l) ? 'active' : ''}" 
+                  onclick={() => {
+                    if (l === 'auto') langSelected = ['auto'];
+                    else {
+                      langSelected = langSelected.filter(x => x !== 'auto');
+                      if (langSelected.includes(l)) langSelected = langSelected.filter(x => x !== l);
+                      else langSelected = [...langSelected, l];
+                    }
+                  }}>{l.toUpperCase()}</button>
+              {/each}
+            </div>
+          </div>
+          <div class="quality-inputs">
+             <label class="checkbox-row">
+               <input type="checkbox" bind:checked={langStatsOnly} />
+               <span>Stats only</span>
+             </label>
+             <label class="checkbox-row">
+               <input type="checkbox" bind:checked={langAutoMode} />
+               <span>Add _lang field</span>
+             </label>
           </div>
         </div>
-        <button class="btn-parse" disabled={running || !parseFile} onclick={runSmartParse}>{running ? "⏳ Analyzing..." : "🔬 Analyze File"}</button>
-        <div class="parse-features">
-          <div class="feature">📋 <strong>Format</strong><span>Alpaca, Messages, HF, problem/solution</span></div>
-          <div class="feature">📏 <strong>Length</strong><span>Avg word count, min/max</span></div>
-          <div class="feature">🔤 <strong>Language</strong><span>EN, LV, RU detection</span></div>
-          <div class="feature">🔄 <strong>Duplicates</strong><span>Percentage found</span></div>
-          <div class="feature">💻 <strong>Code</strong><span>% records with code blocks</span></div>
-          <div class="feature">💡 <strong>Suggestions</strong><span>Optimal filter parameters</span></div>
-        </div>
+        <button class="btn-action" onclick={runLangFilter} disabled={running}>🌍 Run Language Filter</button>
+
+        {#if langTotal > 0}
+          <div class="score-results card-glass-dark">
+            <div class="results-summary">
+              <div class="res-item"><span>Total</span><strong>{langTotal}</strong></div>
+              <div class="res-item"><span>Saved</span><strong>{langSaved}</strong></div>
+            </div>
+            <div class="score-bars">
+              {#each langStats as s}
+                <div class="bar-row">
+                  <span class="bar-lbl" style="width:60px">{s.lang}</span>
+                  <div class="bar-track"><div class="bar-fill" style="width:{s.pct}%;background:#10b981"></div></div>
+                  <span class="bar-pct">{s.pct.toFixed(1)}%</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
       </div>
     {/if}
 
     <!-- AUGMENT -->
     {#if activeTab === "augment"}
-      <div class="card filter-card">
-        <h2>🤖 Variation Generator</h2>
-        <p class="hint" style="color:#a0aec0">Uses Claude API to generate new variations from existing records. Turn 100 records into 300-500 unique entries!</p>
-        <div class="filter-row">
-          <span class="filter-label">📄 Input file</span>
-          <div class="file-pick-row">
-            <input type="text" class="filter-input" placeholder="file.json" bind:value={varFile} />
-            <button class="btn-sm" onclick={() => pickFile(v => varFile = v)}>📂</button>
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>🤖 AI Dataset Augmentation</h2>
+          <p class="card-sub">Generate unique variations using Claude AI</p>
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <span class="row-label">🔑 Anthropic API Key</span>
+            <input type="password" class="form-input" placeholder="sk-ant-..." bind:value={varApiKey} />
+          </div>
+          <div class="form-row">
+            <span class="row-label">📄 Source File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={varFile} />
+              <button class="btn-square" onclick={() => pickFile(v => varFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="quality-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+             <div class="input-col"><span>Count</span><input type="number" bind:value={varCount} min="1" max="10" /></div>
+             <div class="input-col"><span>Max Source</span><input type="number" bind:value={varMaxSource} /></div>
+             <div class="input-col"><span>Delay (s)</span><input type="number" bind:value={varDelay} step="0.1" /></div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">🎭 Variation Style</span>
+            <div class="pill-grid">
+              {#each ["mixed", "rephrase", "harder", "simpler", "different"] as s}
+                <button class="pill-btn {varStyle === s ? 'active' : ''}" onclick={() => varStyle = s}>{s.toUpperCase()}</button>
+              {/each}
+            </div>
           </div>
         </div>
-        <div class="filter-row">
-          <span class="filter-label">🔑 Claude API Key</span>
-          <input type="password" class="filter-input" placeholder="sk-ant-api03-..." bind:value={varApiKey} />
+        <button class="btn-action" onclick={runVariations} disabled={running || !varApiKey || !varFile}>
+          🤖 Start Augmentation
+        </button>
+      </div>
+    {/if}
+
+    <!-- CONVERT -->
+    {#if activeTab === "convert"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <h2>🔄 Format Conversion</h2>
+          <p class="card-sub">Transform files between formats (Parquet, Raw JSON, Alpaca)</p>
         </div>
-        <div class="filter-section">
-          <span class="filter-label">⚙️ Settings</span>
-          <div class="quality-grid">
-            <label class="row-label sm"><span>Variations per record</span><input type="number" bind:value={varCount} min="1" max="10" /></label>
-            <label class="row-label sm"><span>Max source records</span><input type="number" bind:value={varMaxSource} min="1" /></label>
-            <label class="row-label sm"><span>API delay (s)</span><input type="number" bind:value={varDelay} min="0" step="0.1" /></label>
-          </div>
+        <div class="form-grid">
+           <div class="stat-box blue" style="flex-direction:row; justify-content:space-between; width:100%; padding:16px;">
+              <div style="text-align:left">
+                <strong>📦 Bulk Parquet → JSON</strong>
+                <p style="font-size:11px;opacity:0.7">Converts all .parquet files in current folder</p>
+              </div>
+              <button class="btn-primary" onclick={() => run("parquet_to_json")} disabled={running}>Run</button>
+           </div>
+           
+           <div class="card-glass-dark" style="padding:20px; border-radius:12px;">
+              <h3 style="margin-bottom:12px; font-size:14px;">🦙 JSON → Alpaca Format</h3>
+              <div class="file-pick-group">
+                <input type="text" class="form-input" placeholder="Select source JSON..." bind:value={filterFile} />
+                <button class="btn-square" onclick={() => pickFile(v => filterFile = v)}>📂</button>
+              </div>
+              <button class="btn-action" 
+                onclick={() => run("convert_to_alpaca", { input_file: filterFile })} 
+                disabled={running || !filterFile}>Convert to Alpaca</button>
+           </div>
         </div>
-        <div class="filter-section">
-          <span class="filter-label">🎨 Variation style</span>
-          <div class="style-grid">
-            {#each VAR_STYLES as s}
-              <button class="style-btn {varStyle === s.id ? 'style-active' : ''}" onclick={() => varStyle = s.id}>{s.label}</button>
-            {/each}
-          </div>
-        </div>
-        <div class="estimate-box">
-          <span>📊 Estimated output:</span>
-          <strong>{varMaxSource} × {varCount} = ~{varMaxSource * varCount} records</strong>
-          <span>⏱️ ~{Math.ceil(varMaxSource * varCount * varDelay / 60)} min</span>
-        </div>
-        <button class="btn-augment" disabled={running || !varFile || !varApiKey} onclick={runVariations}>{running ? "⏳ Generating..." : "🚀 Start Generation"}</button>
-        <p class="hint">Result → <code>variations_output.json</code> | Then use <strong>Merge</strong> to combine!</p>
+      </div>
+    {/if}
+
+    <!-- MERGE -->
+    {#if activeTab === "merge"}
+      <div class="card-glass content-card">
+        <h2>🔗 Merge & Deduplicate</h2>
+        <p class="card-sub">Combine all JSON files in current folder into <code>alpaca_merged.json</code>.</p>
+        <button class="btn-action" onclick={() => run("merge_alpaca")} disabled={running}>🔗 Merge Alpaca Files</button>
       </div>
     {/if}
 
   </section>
 
-  <section class="log-section">
+  <section class="log-section card-glass-dark">
     <div class="log-header">
-      <span>📋 Output</span>
-      {#if running}<span class="spinner">⏳ Running...</span>{/if}
-      <button class="btn-clear" onclick={clearLog}>🗑️ Clear</button>
+      <div class="log-title">📋 Console Output</div>
+      <div class="log-actions">
+        <button class="log-tool" onclick={exportLog} title="Save Log">💾</button>
+        <button class="log-tool" onclick={clearLog} title="Clear Log">🗑️</button>
+      </div>
     </div>
-    <pre class="log">{log || "Script output will appear here..."}</pre>
+    <pre class="log-area" id="log-view">{log || "Waiting for action..."}</pre>
   </section>
 </main>
 
 <style>
   :global(*) { box-sizing: border-box; margin: 0; padding: 0; }
-  :global(body) { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; user-select: none; }
+  :global(body) { 
+    font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; 
+    background: radial-gradient(circle at top right, #1e293b, #0f172a, #020617);
+    color: #f1f5f9; 
+    min-height: 100vh; 
+    overflow-x: hidden;
+    line-height: 1.5;
+  }
 
-  main { max-width: 920px; margin: 0 auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 11px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
 
-  header { display:flex; align-items:center; gap:12px; padding-bottom:11px; border-bottom:1px solid #2d3748; }
-  .logo { font-size:28px; }
-  .header-text { display:flex; flex-direction:column; gap:2px; }
-  h1 { font-size:19px; font-weight:700; color:#63b3ed; letter-spacing:1px; }
-  .sub { font-size:10px; color:#4a5568; text-transform:uppercase; letter-spacing:1.5px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; }
+  .header-left { display: flex; align-items: center; gap: 16px; }
+  .logo { font-size: 32px; filter: drop-shadow(0 0 10px rgba(99, 179, 237, 0.4)); }
+  h1 { font-size: 24px; font-weight: 800; background: linear-gradient(to right, #60a5fa, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .sub { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 2px; }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .version-badge { font-size: 10px; color: #94a3b8; background: rgba(30, 41, 59, 0.6); padding: 4px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); }
+  .btn-about { background: none; border: none; color: #3b82f6; font-size: 12px; cursor: pointer; text-decoration: underline; }
 
-  .folder-bar { display:flex; gap:8px; }
-  .folder-bar input { flex:1; background:#1a202c; border:1px solid #2d3748; border-radius:8px; padding:8px 13px; color:#e2e8f0; font-size:13px; outline:none; }
-  .folder-bar input:focus { border-color:#4299e1; }
-  .folder-bar input::placeholder { color:#4a5568; }
-  .btn-pick { background:#2d3748; color:#e2e8f0; border:1px solid #4a5568; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; white-space:nowrap; transition:all 0.2s; }
-  .btn-pick:hover:not(:disabled) { background:#4a5568; }
-  .btn-pick:disabled { opacity:0.4; cursor:not-allowed; }
+  .card-glass { 
+    background: rgba(30, 41, 59, 0.4); 
+    backdrop-filter: blur(12px); 
+    border: 1px solid rgba(255, 255, 255, 0.08); 
+    border-radius: 16px; 
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  }
+  .card-glass-dark {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+  }
 
-  .tabs { display:flex; gap:2px; background:#1a202c; padding:3px; border-radius:10px; border:1px solid #2d3748; }
-  .tab { flex:1; padding:7px 2px; border:none; border-radius:7px; background:transparent; color:#718096; cursor:pointer; font-size:10.5px; font-weight:500; transition:all 0.2s; text-align:center; }
-  .tab.active { color:#fff; }
-  .tab:hover:not(.active) { background:#2d3748; color:#e2e8f0; }
-  .tab-scrape.active  { background:#1a5276; }
-  .tab-split.active   { background:#2b6cb0; }
-  .tab-convert.active { background:#276749; }
-  .tab-merge.active   { background:#553c9a; }
-  .tab-filter.active  { background:#744210; }
-  .tab-parse.active   { background:#1d4e89; }
-  .tab-augment.active { background:#702459; }
+  .folder-bar { display: flex; gap: 12px; padding: 12px; align-items: center; }
+  .input-wrapper { flex: 1; position: relative; display: flex; align-items: center; }
+  .input-icon { position: absolute; left: 12px; opacity: 0.6; pointer-events: none; }
+  .input-wrapper input { 
+    width: 100%; 
+    background: rgba(15, 23, 42, 0.5); 
+    border: 1px solid rgba(255,255,255,0.1); 
+    border-radius: 10px; 
+    padding: 10px 10px 10px 38px; 
+    color: #f1f5f9; 
+    font-size: 13px; 
+    outline: none; 
+    transition: all 0.2s;
+  }
+  .input-wrapper input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+  .folder-actions { display: flex; gap: 8px; }
 
-  .card { background:#1a202c; border:1px solid #2d3748; border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:12px; min-height:120px; }
-  .card h2 { font-size:14px; color:#90cdf4; font-weight:600; }
-  .filter-card { gap:12px; }
+  .tabs-nav { display: flex; gap: 4px; padding: 6px; }
+  .tab-btn { 
+    flex: 1; 
+    padding: 10px 4px; 
+    border: none; 
+    background: transparent; 
+    color: #94a3b8; 
+    font-size: 11px; 
+    font-weight: 600; 
+    cursor: pointer; 
+    border-radius: 8px; 
+    transition: all 0.2s; 
+  }
+  .tab-btn:hover { background: rgba(255,255,255,0.05); color: #f1f5f9; }
+  .tab-btn.active { background: #3b82f6; color: #fff; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
 
-  .row-label { display:flex; align-items:center; gap:10px; font-size:13px; color:#a0aec0; }
-  .row-label.sm { font-size:11px; }
-  .row-label input[type="number"] { width:70px; background:#2d3748; border:1px solid #4a5568; border-radius:6px; padding:5px 8px; color:#e2e8f0; font-size:12px; outline:none; }
+  .content-card { padding: 24px; display: flex; flex-direction: column; gap: 20px; min-height: 200px; }
+  .card-header h2 { font-size: 18px; color: #f8fafc; margin-bottom: 4px; }
+  .card-sub { font-size: 12px; color: #64748b; }
 
-  .btn-row { display:flex; gap:10px; flex-wrap:wrap; }
-  .btn-action { flex:1; min-width:140px; padding:10px 14px; background:#2d3748; border:1px solid #4a5568; border-radius:8px; color:#e2e8f0; font-size:13px; font-weight:500; cursor:pointer; transition:all 0.2s; }
-  .btn-action:hover:not(:disabled) { background:#4a5568; border-color:#63b3ed; }
-  .btn-action:disabled { opacity:0.4; cursor:not-allowed; }
-  .btn-blue { background:#2b6cb0; border-color:#4299e1; }
-  .btn-blue:hover:not(:disabled) { background:#2c5282; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .stat-box { 
+    padding: 20px; 
+    border-radius: 14px; 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    gap: 8px; 
+    border: 1px solid rgba(255,255,255,0.05); 
+    transition: transform 0.2s;
+  }
+  .stat-box:hover { transform: translateY(-4px); }
+  .stat-box.blue { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.2); }
+  .stat-box.green { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2); }
+  .stat-box.purple { background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.2); }
+  .stat-val { font-size: 28px; font-weight: 800; }
+  .stat-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; }
 
-  .hint { font-size:11.5px; color:#4a5568; line-height:1.6; }
-  .hint strong { color:#718096; }
-  .hint code { background:#2d3748; padding:1px 5px; border-radius:4px; font-family:monospace; font-size:11px; color:#68d391; }
+  .form-grid { display: flex; flex-direction: column; gap: 16px; }
+  .form-row { display: flex; flex-direction: column; gap: 8px; }
+  .row-label { font-size: 12px; font-weight: 600; color: #94a3b8; }
+  .file-pick-group { display: flex; gap: 8px; }
+  .form-input { 
+    flex: 1; 
+    background: rgba(15, 23, 42, 0.6); 
+    border: 1px solid rgba(255,255,255,0.1); 
+    border-radius: 8px; 
+    padding: 10px 14px; 
+    color: #f1f5f9; 
+    outline: none; 
+  }
+  .btn-square { background: #334155; border: none; border-radius: 8px; padding: 10px 16px; cursor: pointer; color: #e2e8f0; }
 
-  .url-row { display:flex; gap:8px; }
-  .url-input { font-size:12px; }
-  .quick-links { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; }
-  .ql-label { font-size:11px; color:#4a5568; white-space:nowrap; }
-  .ql-btn { background:#1a1f2e; border:1px solid #2d3748; border-radius:5px; padding:3px 8px; color:#63b3ed; cursor:pointer; font-size:10px; transition:all 0.15s; }
-  .ql-btn:hover { background:#2d3748; border-color:#63b3ed; }
+  .slider-group { display: flex; align-items: center; gap: 16px; }
+  .glass-slider { flex: 1; accent-color: #3b82f6; height: 6px; border-radius: 3px; cursor: pointer; }
+  .badge { padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; min-width: 50px; text-align: center; }
 
-  .history-list { display:flex; flex-direction:column; gap:4px; }
-  .history-btn { display:flex; align-items:center; gap:8px; background:#0d1117; border:1px solid #2d3748; border-radius:6px; padding:6px 10px; color:#718096; cursor:pointer; font-size:11px; transition:all 0.15s; text-align:left; }
-  .history-btn:hover { background:#1a202c; border-color:#4a5568; color:#e2e8f0; }
-  .hist-icon { font-size:12px; }
-  .hist-url { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pill-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .pill-btn { 
+    padding: 8px; 
+    border-radius: 10px; 
+    background: #1e293b; 
+    border: 1px solid #334155; 
+    color: #94a3b8; 
+    font-size: 11px; 
+    cursor: pointer; 
+    transition: all 0.2s; 
+  }
+  .pill-btn.active { background: #334155; border-color: #60a5fa; color: #60a5fa; box-shadow: 0 0 10px rgba(59, 130, 246, 0.2); }
 
-  .scrape-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .scrape-select { background:#2d3748; border:1px solid #4a5568; border-radius:6px; padding:5px 8px; color:#e2e8f0; font-size:12px; outline:none; cursor:pointer; }
+  .quality-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .input-col { display: flex; align-items: center; gap: 10px; font-size: 12px; color: #64748b; }
+  .input-col input { width: 80px; background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; color: #fff; outline:none; }
 
-  .shield-box { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
-  .shield-item { background:#0d1117; border:1px solid #1a3a1a; border-radius:7px; padding:8px 10px; font-size:11px; color:#68d391; display:flex; align-items:center; gap:6px; }
-  .shield-item span { color:#4a5568; }
+  button { border: none; outline: none; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
 
-  .btn-scrape { padding:12px; background:#1a5276; border:1px solid #2980b9; border-radius:9px; color:#aed6f1; font-size:14px; font-weight:600; cursor:pointer; transition:all 0.2s; }
-  .btn-scrape:hover:not(:disabled) { background:#154360; }
-  .btn-scrape:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+    margin-top: 15px;
+    padding: 16px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 800;
+    color: white !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    background: linear-gradient(135deg, #fb923c 0%, #ea580c 100%) !important;
+    box-shadow: 0 4px 15px rgba(234, 88, 12, 0.4) !important;
+  }
+  .btn-action:hover:not(:disabled) {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 30px rgba(234, 88, 12, 0.6) !important;
+    filter: brightness(1.15);
+  }
+  .btn-action:disabled {
+    opacity: 0.35;
+    background: linear-gradient(135deg, #fb923c 0%, #ea580c 100%) !important;
+    cursor: not-allowed;
+  }
 
-  .filter-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-  .filter-label { font-size:11.5px; color:#a0aec0; font-weight:600; min-width:115px; }
-  .filter-input { flex:1; background:#2d3748; border:1px solid #4a5568; border-radius:7px; padding:7px 10px; color:#e2e8f0; font-size:12px; outline:none; transition:border-color 0.2s; }
-  .filter-input:focus { border-color:#4299e1; }
-  .filter-input::placeholder { color:#4a5568; }
-  .file-pick-row { display:flex; gap:6px; flex:1; }
-  .file-pick-row .filter-input { flex:1; }
-  .btn-sm { background:#2d3748; border:1px solid #4a5568; border-radius:7px; padding:7px 10px; color:#e2e8f0; cursor:pointer; font-size:13px; transition:all 0.2s; }
-  .btn-sm:hover { background:#4a5568; }
-  .filter-section { display:flex; flex-direction:column; gap:7px; }
-  .domain-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:5px; }
-  .domain-btn { padding:6px 4px; background:#2d3748; border:1px solid #4a5568; border-radius:7px; color:#718096; cursor:pointer; font-size:10.5px; font-weight:500; transition:all 0.15s; text-align:center; }
-  .domain-btn:hover { background:#4a5568; color:#e2e8f0; }
-  .domain-active { background:#2d3a1e; border-color:#68d391; color:#68d391; font-weight:700; }
-  .quality-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
-  .check-row { display:flex; gap:20px; flex-wrap:wrap; }
-  .check-label { display:flex; align-items:center; gap:8px; font-size:12px; color:#a0aec0; cursor:pointer; }
-  .check-label input { width:14px; height:14px; cursor:pointer; accent-color:#805ad5; }
-  .custom-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .custom-field { display:flex; flex-direction:column; gap:4px; }
-  .field-label { font-size:10.5px; color:#4a5568; }
-  .format-row { display:flex; gap:6px; }
-  .fmt-btn { flex:1; padding:7px; background:#2d3748; border:1px solid #4a5568; border-radius:7px; color:#718096; cursor:pointer; font-size:12px; font-weight:500; transition:all 0.2s; }
-  .fmt-btn:hover { background:#4a5568; color:#e2e8f0; }
-  .fmt-active { background:#744210; border-color:#d69e2e; color:#faf089; }
-  .btn-filter { padding:10px; background:#744210; border:1px solid #d69e2e; border-radius:9px; color:#faf089; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.2s; }
-  .btn-filter:hover:not(:disabled) { background:#5c3c0d; }
-  .btn-filter:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn-primary { background: #3b82f6; border: none; border-radius: 10px; padding: 0 20px; cursor: pointer; color: #fff; font-weight: 600; font-size: 13px; }
+  .btn-outline { background: transparent; border: 1px solid #334155; border-radius: 10px; padding: 0 20px; cursor: pointer; color: #cbd5e1; font-weight: 600; font-size: 13px; }
 
-  .btn-parse { padding:10px; background:#1d4e89; border:1px solid #3182ce; border-radius:9px; color:#bee3f8; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.2s; }
-  .btn-parse:hover:not(:disabled) { background:#1a3f6e; }
-  .btn-parse:disabled { opacity:0.4; cursor:not-allowed; }
-  .parse-features { display:grid; grid-template-columns:repeat(3,1fr); gap:7px; }
-  .feature { background:#0d1117; border:1px solid #2d3748; border-radius:8px; padding:9px; display:flex; flex-direction:column; gap:3px; font-size:10.5px; }
-  .feature strong { color:#90cdf4; }
-  .feature span { color:#4a5568; }
+  .log-section { display: flex; flex-direction: column; overflow: hidden; }
+  .log-header { padding: 12px 20px; background: rgba(0,0,0,0.2); border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; }
+  .log-title { font-size: 12px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .log-actions { display: flex; gap: 8px; }
+  .log-tool { background: none; border: none; color: #64748b; cursor: pointer; font-size: 14px; }
+  .log-area { padding: 20px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 12px; color: #10b981; white-space: pre-wrap; height: 260px; overflow-y: auto; overflow-x: hidden; line-height: 1.6; }
 
-  .style-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:5px; }
-  .style-btn { padding:6px 3px; background:#2d3748; border:1px solid #4a5568; border-radius:7px; color:#718096; cursor:pointer; font-size:10.5px; font-weight:500; transition:all 0.15s; text-align:center; }
-  .style-btn:hover { background:#4a5568; color:#e2e8f0; }
-  .style-active { background:#3d1a4e; border-color:#b794f4; color:#e9d8fd; font-weight:700; }
-  .estimate-box { background:#0d1117; border:1px solid #2d3748; border-radius:8px; padding:10px 12px; display:flex; align-items:center; gap:14px; font-size:12px; color:#718096; }
-  .estimate-box strong { color:#68d391; font-size:14px; }
-  .btn-augment { padding:11px; background:#702459; border:1px solid #b83280; border-radius:9px; color:#fed7e2; font-size:13px; font-weight:600; cursor:pointer; transition:all 0.2s; }
-  .btn-augment:hover:not(:disabled) { background:#561c45; }
-  .btn-augment:disabled { opacity:0.4; cursor:not-allowed; }
+  .score-results { margin-top: 10px; padding: 20px; }
+  .results-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .res-item { display: flex; flex-direction: column; gap: 4px; }
+  .res-item span { font-size: 11px; color: #64748b; text-transform: uppercase; }
+  .res-item strong { font-size: 20px; color: #f1f5f9; }
 
-  .log-section { background:#0d1117; border:1px solid #2d3748; border-radius:12px; overflow:hidden; }
-  .log-header { display:flex; align-items:center; gap:10px; padding:8px 14px; background:#1a202c; border-bottom:1px solid #2d3748; font-size:12px; color:#718096; }
-  .spinner { color:#f6ad55; animation:pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .btn-clear { margin-left:auto; background:none; border:none; color:#4a5568; cursor:pointer; font-size:12px; }
-  .btn-clear:hover { color:#a0aec0; }
-  .log { padding:13px 15px; font-family:'Cascadia Code','Consolas',monospace; font-size:12px; color:#68d391; white-space:pre-wrap; word-break:break-all; min-height:140px; max-height:260px; overflow-y:auto; line-height:1.7; }
+  .bar-row { display: grid; grid-template-columns: 30px 1fr 40px; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .bar-lbl { font-size: 11px; color: #94a3b8; font-weight: 700; }
+  .bar-track { height: 8px; background: rgba(0,0,0,0.3); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+  .bar-pct { font-size: 11px; color: #64748b; text-align: right; }
+
+  .modal-bg { position: fixed; inset: 0; background: rgba(2, 6, 23, 0.9); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal { background: rgba(30, 41, 59, 0.8); border: 2px solid #3b82f6; border-radius: 24px; padding: 48px; text-align: center; max-width: 400px; box-shadow: 0 0 40px rgba(59, 130, 246, 0.3); }
+  .modal-logo { font-size: 48px; margin-bottom: 16px; }
+  .modal-version { color: #64748b; margin-bottom: 24px; }
+  .modal-info { display: flex; flex-direction: column; gap: 12px; color: #94a3b8; font-size: 14px; margin-bottom: 32px; }
+  .modal-close { padding: 10px 32px; background: #3b82f6; color: #fff; border-radius: 12px; border: none; cursor: pointer; font-weight: 700; }
+  .welcome-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+    text-align: center;
+    color: rgba(255,255,255,0.8);
+  }
+  .hero-icon {
+    font-size: 64px;
+    margin-bottom: 20px;
+    filter: drop-shadow(0 0 15px rgba(96,165,250,0.4));
+    animation: pulse 3s infinite ease-in-out;
+  }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.1); opacity: 1; }
+  }
+  .welcome-hero h3 { font-size: 24px; margin-bottom: 10px; color: white; }
+  .welcome-hero p { max-width: 400px; opacity: 0.6; line-height: 1.5; }
+
+  .loading-full {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 0;
+    gap: 15px;
+    opacity: 0.8;
+  }
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(255,255,255,0.1);
+    border-top-color: #60a5fa;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .file-list-container {
+    margin-top: 24px;
+    padding: 20px;
+    border-radius: 12px;
+  }
+  .list-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: rgba(255,255,255,0.4);
+    margin-bottom: 15px;
+  }
+  .file-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .file-item-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px;
+    transition: all 0.2s;
+  }
+  .file-item-row:hover {
+    background: rgba(255,255,255,0.07);
+    transform: translateX(5px);
+  }
+  .file-name { font-size: 13px; color: rgba(255,255,255,0.9); }
+  .file-size { font-size: 12px; font-weight: 600; color: #60a5fa; }
 </style>

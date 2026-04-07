@@ -29,3 +29,19 @@ __pycache__/
 
 # Logs
 *.log
+
+# SvelteKit
+.svelte-kit/
+.vercel_build_output/
+.output/
+
+# Data Files (Local datasets)
+*.json
+*.jsonl
+*.csv
+*.parquet
+!package.json
+!composer.json
+!tsconfig.json
+!tauri.conf.json
+!*.schema.json
