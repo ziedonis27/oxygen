@@ -115,14 +115,93 @@
   let langSaved: number = $state(0);
 
   // --- Preview state ---
-  let prevFile     = $state("");
-  let prevData: any[] = $state([]);
-  let prevSearch   = $state("");
-  let prevPage     = $state(1);
-  let prevLimit    = $state(20);
-  let prevTotal    = $state(0);
-  let prevSelectedIds = $state<string[]>([]);
-  let prevExpandedId  = $state<string | null>(null);
+  let prevFile          = $state("");
+  let prevData: any[]   = $state([]);
+  let prevSearch        = $state("");
+  let prevPage          = $state(1);
+  let prevLimit         = $state(20);
+  let prevTotal         = $state(0);
+  let prevFilteredTotal = $state(0);
+  let prevFields: string[] = $state([]);
+  let prevLoading       = $state(false);
+  let prevSelectedIds   = $state<string[]>([]);
+  let prevExpandedId    = $state<string | null>(null);
+
+  async function loadPreview(resetPage = false) {
+    if (!folder || !prevFile) { appendLog("⚠️ Select a working folder and file first."); return; }
+    if (resetPage) { prevPage = 1; prevSelectedIds = []; prevExpandedId = null; }
+    prevLoading = true;
+    try {
+      const res = await invoke<string>("preview_dataset", {
+        folder,
+        inputFile:     prevFile,
+        action:        "preview",
+        offset:        (prevPage - 1) * prevLimit,
+        limit:         prevLimit,
+        search:        prevSearch,
+        deleteIndices: "",
+      });
+      const d = JSON.parse(res);
+      prevData          = d.records ?? [];
+      prevTotal         = d.total ?? 0;
+      prevFilteredTotal = d.filtered_total ?? 0;
+      prevFields        = ((d.fields ?? []) as string[]).filter((f: string) => !f.startsWith("_")).slice(0, 4);
+    } catch (e) { appendLog(`❌ Preview error: ${e}`); }
+    prevLoading = false;
+  }
+
+  async function prevDeleteSingle(index: number) {
+    try {
+      const res = await invoke<string>("preview_dataset", {
+        folder, inputFile: prevFile, action: "delete",
+        offset: 0, limit: prevLimit, search: "",
+        deleteIndices: String(index),
+      });
+      const d = JSON.parse(res);
+      appendLog(`🗑️ Record #${index} deleted. Remaining: ${d.remaining}`);
+      prevSelectedIds = prevSelectedIds.filter(id => id !== String(index));
+      loadPreview();
+    } catch (e) { appendLog(`❌ Delete error: ${e}`); }
+  }
+
+  async function prevDeleteSelected() {
+    if (!prevSelectedIds.length) return;
+    try {
+      const res = await invoke<string>("preview_dataset", {
+        folder, inputFile: prevFile, action: "delete",
+        offset: 0, limit: prevLimit, search: "",
+        deleteIndices: prevSelectedIds.join(","),
+      });
+      const d = JSON.parse(res);
+      appendLog(`🗑️ Deleted ${d.deleted} records. Remaining: ${d.remaining}`);
+      prevSelectedIds = [];
+      loadPreview(true);
+    } catch (e) { appendLog(`❌ Delete error: ${e}`); }
+  }
+
+  function prevToggleSelect(id: string) {
+    if (prevSelectedIds.includes(id)) prevSelectedIds = prevSelectedIds.filter(x => x !== id);
+    else prevSelectedIds = [...prevSelectedIds, id];
+  }
+
+  function prevToggleAll() {
+    const ids = prevData.map(r => String(r._index));
+    if (ids.every(id => prevSelectedIds.includes(id))) prevSelectedIds = prevSelectedIds.filter(id => !ids.includes(id));
+    else prevSelectedIds = [...new Set([...prevSelectedIds, ...ids])];
+  }
+
+  function prevTotalPages() { return Math.max(1, Math.ceil(prevFilteredTotal / prevLimit)); }
+
+  function truncate(val: any, len = 80): string {
+    const s = typeof val === "object" ? JSON.stringify(val) : String(val ?? "");
+    return s.length > len ? s.slice(0, len) + "…" : s;
+  }
+
+  function openInEditor(rec: any) {
+    const content = JSON.stringify(rec, null, 2);
+    editorContent = content;
+    activeTab = "editor";
+  }
 
   // --- JSON Editor state ---
   let editorFile   = $state("");
@@ -614,6 +693,7 @@
       { id: "merge",   label: "🔗 Merge"   },
       { id: "split",   label: "✂️ Split"   },
       { id: "augment", label: "🤖 Aug"     },
+      { id: "preview", label: "👁 Preview"  },
       { id: "editor",  label: "✏️ Edit"    },
     ] as tab}
       <button class="tab-btn {activeTab === tab.id ? 'active' : ''}" onclick={() => setTab(tab.id)}>{tab.label}</button>
@@ -1051,6 +1131,148 @@
       </div>
     {/if}
 
+    <!-- PREVIEW -->
+    {#if activeTab === "preview"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:24px;">👁</span>
+            <div>
+              <h2 style="margin:0">Dataset Browser</h2>
+              <p class="card-sub" style="margin:0">Browse, search, and delete records from any JSON/JSONL file</p>
+            </div>
+          </div>
+          {#if prevTotal > 0}
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+              <span class="ed-badge info">{prevTotal.toLocaleString()} total</span>
+              {#if prevSearch && prevFilteredTotal !== prevTotal}
+                <span class="ed-badge neutral">{prevFilteredTotal.toLocaleString()} matched</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Controls bar -->
+        <div class="prev-controls">
+          <div class="file-pick-group" style="flex:1;">
+            <input type="text" class="form-input" placeholder="Select dataset file..." bind:value={prevFile} />
+            <button class="btn-square" onclick={() => pickFile(v => { prevFile = v; loadPreview(true); })}>📂</button>
+          </div>
+          <input
+            type="text"
+            class="form-input prev-search"
+            placeholder="🔍 Search records..."
+            bind:value={prevSearch}
+            onkeydown={(e) => e.key === "Enter" && loadPreview(true)}
+          />
+          <select class="prev-limit-sel" bind:value={prevLimit} onchange={() => loadPreview(true)}>
+            {#each [10, 20, 50, 100] as n}
+              <option value={n}>{n} / page</option>
+            {/each}
+          </select>
+          <button class="btn-primary" style="padding:11px 18px; white-space:nowrap;" onclick={() => loadPreview(true)} disabled={prevLoading || !prevFile}>
+            {prevLoading ? "⏳" : "🔄"} Load
+          </button>
+        </div>
+
+        <!-- Bulk action bar -->
+        {#if prevData.length > 0}
+          <div class="prev-bulk-bar">
+            <label class="checkbox-row" style="margin:0;">
+              <input type="checkbox"
+                checked={prevData.every(r => prevSelectedIds.includes(String(r._index)))}
+                onchange={prevToggleAll}
+              />
+              <span>Select page</span>
+            </label>
+            {#if prevSelectedIds.length > 0}
+              <span class="ed-badge dirty">{prevSelectedIds.length} selected</span>
+              <button class="ed-tool-btn danger" onclick={prevDeleteSelected}>🗑️ Delete selected</button>
+            {/if}
+            <span style="margin-left:auto; font-size:12px; color:#666;">
+              Rows {((prevPage-1)*prevLimit)+1}–{Math.min(prevPage*prevLimit, prevFilteredTotal)} of {prevFilteredTotal.toLocaleString()}
+            </span>
+          </div>
+        {/if}
+
+        <!-- Table -->
+        {#if prevLoading}
+          <div class="loading-full" style="padding:40px 0;">
+            <div class="spinner"></div>
+            <p>Loading records...</p>
+          </div>
+        {:else if prevData.length > 0}
+          <div class="prev-table-wrap card-glass-dark">
+            <table class="prev-table">
+              <thead>
+                <tr>
+                  <th class="col-check"></th>
+                  <th class="col-idx">#</th>
+                  {#each prevFields as f}
+                    <th>{f}</th>
+                  {/each}
+                  <th class="col-actions"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each prevData as rec}
+                  {@const id = String(rec._index)}
+                  {@const isSelected = prevSelectedIds.includes(id)}
+                  {@const isExpanded = prevExpandedId === id}
+                  <tr
+                    class="prev-row {isSelected ? 'selected' : ''} {isExpanded ? 'expanded' : ''}"
+                    onclick={(e) => { if ((e.target as HTMLElement).closest('.no-expand')) return; prevExpandedId = isExpanded ? null : id; }}
+                  >
+                    <td class="col-check no-expand" onclick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={isSelected} onchange={() => prevToggleSelect(id)} />
+                    </td>
+                    <td class="col-idx">{rec._index}</td>
+                    {#each prevFields as f}
+                      <td class="cell-value" title={String(rec[f] ?? "")}>{truncate(rec[f])}</td>
+                    {/each}
+                    <td class="col-actions no-expand">
+                      <div class="row-actions">
+                        <button class="row-btn" title="Open in Editor" onclick={(e) => { e.stopPropagation(); openInEditor(rec); }}>✏️</button>
+                        <button class="row-btn danger" title="Delete record" onclick={(e) => { e.stopPropagation(); prevDeleteSingle(rec._index); }}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                  {#if isExpanded}
+                    <tr class="expanded-row">
+                      <td colspan={prevFields.length + 3}>
+                        <pre class="record-json">{JSON.stringify(Object.fromEntries(Object.entries(rec).filter(([k]) => k !== '_index')), null, 2)}</pre>
+                      </td>
+                    </tr>
+                  {/if}
+                {/each}
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Pagination -->
+          <div class="prev-pagination">
+            <button class="ed-tool-btn" onclick={() => { prevPage = 1; loadPreview(); }} disabled={prevPage <= 1}>«</button>
+            <button class="ed-tool-btn" onclick={() => { prevPage--; loadPreview(); }} disabled={prevPage <= 1}>‹ Prev</button>
+            <span class="page-indicator">Page {prevPage} of {prevTotalPages()}</span>
+            <button class="ed-tool-btn" onclick={() => { prevPage++; loadPreview(); }} disabled={prevPage >= prevTotalPages()}>Next ›</button>
+            <button class="ed-tool-btn" onclick={() => { prevPage = prevTotalPages(); loadPreview(); }} disabled={prevPage >= prevTotalPages()}>»</button>
+          </div>
+        {:else if prevFile}
+          <div class="welcome-hero" style="padding:48px 20px;">
+            <div style="font-size:48px; margin-bottom:16px;">📭</div>
+            <h3>No records found</h3>
+            <p>{prevSearch ? "Try a different search term." : "File may be empty or in an unsupported format."}</p>
+          </div>
+        {:else}
+          <div class="welcome-hero" style="padding:48px 20px;">
+            <div style="font-size:48px; margin-bottom:16px;">📋</div>
+            <h3>Select a file to browse</h3>
+            <p>Pick any JSON or JSONL dataset file above to start exploring its records.</p>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- JSON EDITOR -->
     {#if activeTab === "editor"}
       <div class="card-glass content-card editor-card">
@@ -1429,6 +1651,119 @@
     font-weight: 600;
     flex: 1;
   }
+
+  /* ===== DATASET PREVIEW ===== */
+  .prev-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .prev-search { flex: 0 0 240px; }
+  .prev-limit-sel {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 9px;
+    padding: 11px 12px;
+    color: #d0d0d0;
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .prev-bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px;
+    min-height: 44px;
+  }
+  .prev-table-wrap {
+    overflow-x: auto;
+    border-radius: 14px;
+  }
+  .prev-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .prev-table thead th {
+    padding: 13px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #666;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    white-space: nowrap;
+  }
+  .col-check  { width: 36px; }
+  .col-idx    { width: 52px; color: #555; font-size: 11px; }
+  .col-actions{ width: 72px; }
+  .prev-row {
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .prev-row:hover { background: rgba(255,255,255,0.04); }
+  .prev-row.selected { background: rgba(66,153,225,0.08); }
+  .prev-row.expanded { background: rgba(255,255,255,0.06); }
+  .prev-row td { padding: 11px 14px; vertical-align: middle; }
+  .cell-value {
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #d0d0d0;
+    font-size: 13px;
+  }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .row-btn {
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #bbb;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .row-btn:hover { background: rgba(255,255,255,0.14); }
+  .row-btn.danger:hover { background: rgba(220,80,80,0.2); border-color: rgba(220,80,80,0.3); color: #fc8181; }
+  .expanded-row td {
+    padding: 0 14px 14px 52px;
+    background: rgba(0,0,0,0.3);
+  }
+  .record-json {
+    font-family: 'JetBrains Mono','Fira Code',monospace;
+    font-size: 12px;
+    color: #7ee8b0;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 14px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .prev-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .page-indicator {
+    font-size: 13px;
+    color: #888;
+    padding: 0 12px;
+  }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: #ccc; }
+  .checkbox-row input[type="checkbox"] { width: 15px; height: 15px; cursor: pointer; accent-color: #90cdf4; }
 
   /* ===== JSON EDITOR ===== */
   .editor-card { gap: 16px; }
