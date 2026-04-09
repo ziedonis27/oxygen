@@ -630,6 +630,153 @@
       appendLog(`❌ Failed to save log: ${e}`);
     }
   }
+
+  // ===== PIPELINE / QUEUE =====
+  function appendQueueLog(text: string) { queueLog += text + "\n"; }
+
+  function addQueueStep(type: QueueStepType) {
+    const def = STEP_DEFAULTS[type];
+    queueSteps = [...queueSteps, {
+      id: Math.random().toString(36).slice(2),
+      type,
+      label: def.label,
+      icon:  def.icon,
+      status: "pending",
+      config: { ...def.config },
+    }];
+    showAddStep = false;
+  }
+
+  function removeQueueStep(i: number) {
+    queueSteps = queueSteps.filter((_, idx) => idx !== i);
+  }
+
+  function moveQueueStep(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= queueSteps.length) return;
+    const arr = [...queueSteps];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    queueSteps = arr;
+  }
+
+  function clearQueue() { queueSteps = []; queueLog = ""; }
+
+  function loadQueuePreset(preset: { name: string; icon: string; steps: string[] }) {
+    queueSteps = preset.steps.map(type => {
+      const def = STEP_DEFAULTS[type as QueueStepType];
+      return {
+        id: Math.random().toString(36).slice(2),
+        type: type as QueueStepType,
+        label: def.label,
+        icon:  def.icon,
+        status: "pending" as QueueStatus,
+        config: { ...def.config },
+      };
+    });
+    queueLog = "";
+  }
+
+  function resetQueueStatuses() {
+    queueSteps = queueSteps.map(s => ({ ...s, status: "pending" as QueueStatus, duration: undefined }));
+  }
+
+  async function runQueueStep(step: QueueStep): Promise<string> {
+    switch (step.type) {
+      case "scrape":
+        return invoke("scrape_dataset", {
+          folder,
+          url: step.config.url || scrapeUrl,
+          hfToken: scrapeToken,
+          split: step.config.split || scrapeSplit,
+          maxRows: scrapeMaxRows,
+          retries: scrapeRetries,
+        });
+      case "parse":
+        return invoke("smart_parse", { folder, inputFile: step.config.inputFile || parseFile });
+      case "filter":
+        return invoke("filter_dataset", {
+          folder,
+          inputFile:    filterFile,
+          outputFile:   filterOutput,
+          domain:       step.config.domain || filterDomain,
+          minOutput:    filterMinOut,
+          minInstr:     filterMinInstr,
+          maxRecords:   filterMaxRec,
+          removeDupes:  filterDupes,
+          requireCode:  filterCode,
+          format:       filterFormat,
+          includeWords: filterInclude,
+          excludeWords: filterExclude,
+        });
+      case "convert":
+        return invoke("parquet_to_json", { folder });
+      case "merge":
+        return invoke("merge_alpaca", { folder });
+      case "split": {
+        const mb   = step.config.maxMb ?? maxMb;
+        const type = step.config.type  ?? "json";
+        return invoke(type === "jsonl" ? "split_jsonl" : "split_json", { folder, max_mb: mb });
+      }
+      case "augment": {
+        let apiKey = varApiKey.trim();
+        if (!apiKey && varKeyStored) {
+          try { apiKey = await invoke<string>("get_api_key"); } catch { throw new Error("Cannot retrieve API key from keychain."); }
+        }
+        if (!apiKey) throw new Error("No Anthropic API key set. Configure it in the Aug tab first.");
+        return invoke("generate_variations", {
+          folder,
+          inputFile:  step.config.inputFile || varFile,
+          outputFile: varOutput,
+          apiKey,
+          count:      step.config.count ?? varCount,
+          maxSource:  varMaxSource,
+          style:      step.config.style  || varStyle,
+          delay:      varDelay,
+        });
+      }
+      default:
+        throw new Error(`Unknown step type: ${(step as any).type}`);
+    }
+  }
+
+  async function runQueue() {
+    if (!queueSteps.length) { appendQueueLog("⚠️ Add steps first."); return; }
+    if (!folder)            { appendQueueLog("⚠️ Select working folder first."); return; }
+    queueRunning = true;
+    queueLog = "";
+    resetQueueStatuses();
+    appendQueueLog(`🚀 Pipeline started — ${queueSteps.length} step(s)\n${"─".repeat(40)}`);
+    const t0Total = performance.now();
+
+    for (let i = 0; i < queueSteps.length; i++) {
+      const step = queueSteps[i];
+      queueSteps[i] = { ...step, status: "running" };
+      const t0 = performance.now();
+      appendQueueLog(`\n[${i + 1}/${queueSteps.length}] ${step.icon} ${step.label}`);
+      try {
+        const res = await runQueueStep(queueSteps[i]);
+        const dur = ((performance.now() - t0) / 1000).toFixed(1);
+        queueSteps[i] = { ...queueSteps[i], status: "done", duration: parseFloat(dur) };
+        appendQueueLog(`  ✅ Done  (${dur}s)`);
+        const preview = String(res ?? "").trim().slice(0, 180);
+        if (preview) appendQueueLog(`  ${preview}`);
+      } catch (e) {
+        const dur = ((performance.now() - t0) / 1000).toFixed(1);
+        queueSteps[i] = { ...queueSteps[i], status: "error", duration: parseFloat(dur) };
+        appendQueueLog(`  ❌ Error: ${e}`);
+        // Mark remaining steps as skipped
+        for (let j = i + 1; j < queueSteps.length; j++) queueSteps[j] = { ...queueSteps[j], status: "skipped" };
+        appendQueueLog(`\n⏹ Pipeline stopped at step ${i + 1}.`);
+        queueRunning = false;
+        return;
+      }
+    }
+
+    const total = ((performance.now() - t0Total) / 1000).toFixed(1);
+    appendQueueLog(`\n${"─".repeat(40)}\n🏁 Pipeline complete in ${total}s`);
+    queueRunning = false;
+    loadDashboard();
+  }
 </script>
 
 <main>
@@ -693,6 +840,7 @@
       { id: "merge",   label: "🔗 Merge"   },
       { id: "split",   label: "✂️ Split"   },
       { id: "augment", label: "🤖 Aug"     },
+      { id: "queue",   label: "⚙️ Queue"  },
       { id: "preview", label: "👁 Preview"  },
       { id: "editor",  label: "✏️ Edit"    },
     ] as tab}
@@ -1128,6 +1276,122 @@
         <h2>🔗 Merge & Deduplicate</h2>
         <p class="card-sub">Combine all JSON files in current folder into <code>alpaca_merged.json</code>.</p>
         <button class="btn-action" onclick={() => run("merge_alpaca")} disabled={running}>🔗 Merge Alpaca Files</button>
+      </div>
+    {/if}
+
+    <!-- PIPELINE / QUEUE -->
+    {#if activeTab === "queue"}
+      <div class="card-glass content-card">
+        <div class="card-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:24px;">⚙️</span>
+            <div>
+              <h2 style="margin:0">Pipeline Builder</h2>
+              <p class="card-sub" style="margin:0">Chain operations into automated workflows that run sequentially</p>
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            {#if queueSteps.length > 0}
+              <span class="ed-badge info">{queueSteps.length} step{queueSteps.length !== 1 ? 's' : ''}</span>
+              {#if queueSteps.filter(s => s.status === 'done').length > 0}
+                <span class="ed-badge valid">{queueSteps.filter(s => s.status === 'done').length} done</span>
+              {/if}
+            {/if}
+          </div>
+        </div>
+
+        <!-- Presets -->
+        <div class="queue-presets">
+          <span class="queue-section-label">Quick presets:</span>
+          {#each QUEUE_PRESETS as preset}
+            <button class="preset-btn" onclick={() => loadQueuePreset(preset)} disabled={queueRunning}>
+              {preset.icon} {preset.name}
+            </button>
+          {/each}
+        </div>
+
+        <!-- Step list -->
+        {#if queueSteps.length > 0}
+          <div class="queue-step-list">
+            {#each queueSteps as step, i}
+              <div class="queue-step-row q-{step.status}">
+                <div class="q-step-indicator">
+                  {#if step.status === 'pending'}  <span class="q-dot pending">○</span>
+                  {:else if step.status === 'running'} <span class="q-dot running">⏳</span>
+                  {:else if step.status === 'done'}    <span class="q-dot done">✓</span>
+                  {:else if step.status === 'error'}   <span class="q-dot error">✗</span>
+                  {:else}                              <span class="q-dot skipped">–</span>
+                  {/if}
+                </div>
+                <div class="q-step-num">{i + 1}</div>
+                <span class="q-step-icon">{step.icon}</span>
+                <span class="q-step-label">{step.label}</span>
+                {#if step.type === 'scrape'}
+                  <input type="text" class="q-inline-input" placeholder="Dataset URL / HF ID" bind:value={step.config.url} disabled={queueRunning} />
+                {:else if step.type === 'filter'}
+                  <select class="q-inline-sel" bind:value={step.config.domain} disabled={queueRunning}>
+                    {#each DOMAINS as d}<option value={d.id}>{d.label}</option>{/each}
+                  </select>
+                {:else if step.type === 'split'}
+                  <span class="q-inline-label">{step.config.maxMb ?? maxMb} MB</span>
+                {:else if step.type === 'augment'}
+                  <span class="q-inline-label">×{step.config.count ?? varCount} {step.config.style ?? varStyle}</span>
+                {/if}
+                {#if step.duration != null}
+                  <span class="q-step-dur">{step.duration}s</span>
+                {/if}
+                <div class="q-step-btns">
+                  <button class="q-btn" onclick={() => moveQueueStep(i, -1)} disabled={i === 0 || queueRunning} title="Move up">↑</button>
+                  <button class="q-btn" onclick={() => moveQueueStep(i, 1)} disabled={i === queueSteps.length - 1 || queueRunning} title="Move down">↓</button>
+                  <button class="q-btn danger" onclick={() => removeQueueStep(i)} disabled={queueRunning} title="Remove">✕</button>
+                </div>
+              </div>
+              {#if i < queueSteps.length - 1}
+                <div class="q-connector">│</div>
+              {/if}
+            {/each}
+          </div>
+        {:else}
+          <div class="queue-empty-state">
+            <span style="font-size:36px; opacity:0.3;">⚙️</span>
+            <p>No steps yet. Use a preset above or add steps manually.</p>
+          </div>
+        {/if}
+
+        <!-- Add step picker -->
+        <div class="queue-add-section">
+          <button class="ed-tool-btn" onclick={() => showAddStep = !showAddStep} disabled={queueRunning}>
+            {showAddStep ? '✕ Cancel' : '＋ Add Step'}
+          </button>
+          {#if showAddStep}
+            <div class="step-type-grid">
+              {#each Object.entries(STEP_DEFAULTS) as [type, def]}
+                <button class="step-type-btn" onclick={() => addQueueStep(type as QueueStepType)}>
+                  <span class="step-type-icon">{def.icon}</span>
+                  <span class="step-type-label">{def.label}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <!-- Run bar -->
+        <div class="queue-run-bar">
+          <button class="btn-action" style="flex:1;" onclick={runQueue} disabled={queueRunning || !queueSteps.length || !folder}>
+            {queueRunning ? '⏳ Running pipeline...' : '▶ Run Pipeline'}
+          </button>
+          <button class="btn-outline" style="padding:17px 22px;" onclick={clearQueue} disabled={queueRunning}>🗑 Clear</button>
+        </div>
+
+        <!-- Queue log -->
+        {#if queueLog}
+          <div class="queue-log-wrap card-glass-dark">
+            <div class="log-header" style="padding:10px 18px;">
+              <span class="log-title">Pipeline Log</span>
+            </div>
+            <pre class="log-area" style="height:200px; color:#90cdf4;">{queueLog}</pre>
+          </div>
+        {/if}
       </div>
     {/if}
 
@@ -1651,6 +1915,141 @@
     font-weight: 600;
     flex: 1;
   }
+
+  /* ===== PIPELINE / QUEUE ===== */
+  .queue-presets {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 14px 18px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+  }
+  .queue-section-label { font-size: 12px; color: #666; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .preset-btn {
+    padding: 8px 16px;
+    border-radius: 9px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #d0d0d0;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .preset-btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); color: #fff; transform: translateY(-1px); }
+  .preset-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .queue-step-list { display: flex; flex-direction: column; }
+  .queue-step-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 16px;
+    border-radius: 11px;
+    border: 1px solid rgba(255,255,255,0.07);
+    background: rgba(255,255,255,0.03);
+    transition: all 0.2s;
+  }
+  .queue-step-row:hover { background: rgba(255,255,255,0.06); }
+  .queue-step-row.q-running { border-color: rgba(246,173,85,0.4); background: rgba(246,173,85,0.06); }
+  .queue-step-row.q-done    { border-color: rgba(80,180,130,0.3); background: rgba(80,180,130,0.05); }
+  .queue-step-row.q-error   { border-color: rgba(220,80,80,0.3);  background: rgba(220,80,80,0.05);  }
+  .queue-step-row.q-skipped { opacity: 0.4; }
+
+  .q-step-indicator { width: 22px; display: flex; justify-content: center; }
+  .q-dot { font-size: 14px; font-weight: 700; }
+  .q-dot.pending  { color: #555; }
+  .q-dot.running  { color: #f6ad55; }
+  .q-dot.done     { color: #7ee8b0; }
+  .q-dot.error    { color: #fc8181; }
+  .q-dot.skipped  { color: #555; }
+
+  .q-step-num   { font-size: 11px; color: #555; font-weight: 700; min-width: 18px; }
+  .q-step-icon  { font-size: 18px; }
+  .q-step-label { font-size: 14px; font-weight: 600; color: #d0d0d0; flex: 1; }
+  .q-step-dur   { font-size: 12px; color: #888; font-family: 'JetBrains Mono','Fira Code',monospace; white-space: nowrap; }
+
+  .q-inline-input {
+    flex: 0 0 200px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 7px;
+    padding: 6px 10px;
+    color: #d0d0d0;
+    font-size: 12px;
+    outline: none;
+  }
+  .q-inline-sel {
+    flex: 0 0 140px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 7px;
+    padding: 6px 10px;
+    color: #d0d0d0;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+  }
+  .q-inline-label { font-size: 12px; color: #777; background: rgba(255,255,255,0.05); padding: 4px 9px; border-radius: 6px; }
+
+  .q-step-btns { display: flex; gap: 5px; margin-left: auto; }
+  .q-btn {
+    padding: 5px 9px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #aaa;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .q-btn:hover:not(:disabled) { background: rgba(255,255,255,0.13); color: #fff; }
+  .q-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .q-btn.danger:hover { background: rgba(220,80,80,0.2); color: #fc8181; }
+
+  .q-connector { text-align: center; color: rgba(255,255,255,0.15); font-size: 14px; line-height: 1; margin: 1px 0; padding-left: 24px; }
+
+  .queue-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 40px 20px;
+    color: #555;
+    font-size: 14px;
+    border: 1px dashed rgba(255,255,255,0.08);
+    border-radius: 12px;
+  }
+
+  .queue-add-section { display: flex; flex-direction: column; gap: 12px; }
+  .step-type-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .step-type-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 14px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #ccc;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .step-type-btn:hover { background: rgba(255,255,255,0.12); color: #fff; transform: translateY(-2px); }
+  .step-type-icon { font-size: 18px; }
+  .step-type-label { font-size: 12px; }
+
+  .queue-run-bar { display: flex; gap: 10px; align-items: stretch; }
+  .queue-log-wrap { border-radius: 14px; overflow: hidden; }
 
   /* ===== DATASET PREVIEW ===== */
   .prev-controls {
