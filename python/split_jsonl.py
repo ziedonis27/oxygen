@@ -1,10 +1,10 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Sadala visus JSONL failus pašreizējā mapē daļās < 2 MB (noklusējums).
-Lietošana:
+Splits all JSONL files in the current folder into parts < 2 MB (default).
+Usage:
     python split_jsonl.py
     python split_jsonl.py --max-mb 5
-    python split_jsonl.py --max-mb 1 --output-dir ./dalas
+    python split_jsonl.py --max-mb 1 --output-dir ./parts
 """
 
 import argparse
@@ -27,7 +27,7 @@ def split_jsonl(input_path: str, max_mb: float, output_dir: str):
         nonlocal part_index, current_size, current_lines, out_file
         if out_file:
             out_file.close()
-            print(f"  -> Saglabats: {out_file.name}  ({current_size / 1024 / 1024:.2f} MB, {current_lines} rindas)")
+            print(f"  -> Saved: {out_file.name}  ({current_size / 1024 / 1024:.2f} MB, {current_lines} lines)")
         out_path = os.path.join(output_dir, f"{base_name}_part{part_index:04d}.jsonl")
         out_file = open(out_path, "w", encoding="utf-8")
         part_index += 1
@@ -46,7 +46,7 @@ def split_jsonl(input_path: str, max_mb: float, output_dir: str):
 
             if line_size > max_bytes:
                 skipped_lines += 1
-                print(f"  Bridinajums: rinda {total_lines + 1} parsniedzmax {max_mb} MB — izlaista.")
+                print(f"  Warning: line {total_lines + 1} exceeds {max_mb} MB — skipped.")
                 continue
 
             if current_size + line_size > max_bytes:
@@ -60,44 +60,43 @@ def split_jsonl(input_path: str, max_mb: float, output_dir: str):
     if out_file:
         out_file.close()
         if current_lines > 0:
-            print(f"  -> Saglabats: {out_file.name}  ({current_size / 1024 / 1024:.2f} MB, {current_lines} rindas)")
+            print(f"  -> Saved: {out_file.name}  ({current_size / 1024 / 1024:.2f} MB, {current_lines} lines)")
 
-    print(f"   Kopaa {total_lines} rindas => {part_index - 1} dalas.\n")
+    print(f"   Total {total_lines} lines => {part_index - 1} parts.\n")
     if skipped_lines:
-        print(f"   Izlaistas {skipped_lines} rindas (parak lielas).")
+        print(f"   Skipped {skipped_lines} lines (too large).")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sadala JSONL failus mazakos.")
-    parser.add_argument("--folder", default=None, help="Darba mape")
+    parser = argparse.ArgumentParser(description="Splits JSONL files into smaller parts.")
+    parser.add_argument("--folder", default=None, help="Working folder")
     parser.add_argument("--max-mb", type=float, default=2.0,
-                        help="Maks. izmers MB vienai dalai (noklusejums: 2.0)")
+                        help="Max size MB per part (default: 2.0)")
     parser.add_argument("--output-dir", default=None,
-                        help="Izvades mape (noklusejums: ta pati mape, kur fails)")
+                        help="Output folder (default: same folder as file)")
     args = parser.parse_args()
 
-    # Mekle JSONL failus tur, kur scripts atrodas
+    # Find JSONL files in the script directory
     script_dir = args.folder if hasattr(args,'folder') and args.folder else os.path.dirname(os.path.abspath(__file__))
     jsonl_files = glob.glob(os.path.join(script_dir, "*.jsonl"))
 
-    # Izfiltre jau sadalitas dalas (lai netiktu apstradatas atkartoti)
+    # Filter out already-split parts (to avoid reprocessing)
     jsonl_files = [f for f in jsonl_files if "_part" not in os.path.basename(f)]
 
     if not jsonl_files:
-        print(f"Nav atrasts neviens .jsonl fails mape: {script_dir}")
+        print(f"No .jsonl files found in folder: {script_dir}")
         sys.exit(0)
 
-    print(f"Atrasti {len(jsonl_files)} JSONL faili mape: {script_dir}")
-    print(f"Maks. dalas izmers: {args.max_mb} MB\n")
+    print(f"Found {len(jsonl_files)} JSONL files in: {script_dir}")
+    print(f"Max part size: {args.max_mb} MB\n")
 
     for jsonl_path in jsonl_files:
-        print(f"Apstrada: {os.path.basename(jsonl_path)}")
+        print(f"Processing: {os.path.basename(jsonl_path)}")
         out_dir = args.output_dir if args.output_dir else os.path.dirname(jsonl_path)
         split_jsonl(jsonl_path, args.max_mb, out_dir)
 
-    print("Viss pabeigts!")
+    print("All done!")
 
 
 if __name__ == "__main__":
     main()
-

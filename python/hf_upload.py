@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-HuggingFace augšuplāde — augšuplādē datasetu uz HF Hub.
+HuggingFace upload — uploads a dataset to HF Hub.
 
-Lietošana:
-    python hf_upload.py --input fails.json --repo username/dataset-name --token hf_xxx
+Usage:
+    python hf_upload.py --input file.json --repo username/dataset-name --token hf_xxx
 
-Nepieciešams:
+Requirements:
     pip install huggingface_hub datasets
 """
 import argparse
@@ -15,7 +15,7 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="HuggingFace augšuplāde")
+    parser = argparse.ArgumentParser(description="HuggingFace upload")
     parser.add_argument("--input",   required=True)
     parser.add_argument("--repo",    required=True, help="HF repo: username/dataset-name")
     parser.add_argument("--token",   required=True, help="HF API token: hf_xxx")
@@ -24,31 +24,31 @@ def main():
     parser.add_argument("--message", default="Upload via Oxygen ML Dataset Manager")
     args = parser.parse_args()
 
-    # Pārbauda importus
+    # Check imports
     try:
         from huggingface_hub import HfApi, create_repo, RepoCard
     except ImportError:
-        print("Kļūda: trūkst 'huggingface_hub' bibliotēka.")
-        print("Instalējiet: pip install huggingface_hub")
+        print("Error: missing 'huggingface_hub' library.")
+        print("Install: pip install huggingface_hub")
         sys.exit(1)
 
     if not os.path.exists(args.input):
-        print(f"Kļūda: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         sys.exit(1)
 
     filename = os.path.basename(args.input)
     size_mb  = os.path.getsize(args.input) / 1024 / 1024
 
-    print(f"Fails   : {filename} ({size_mb:.2f} MB)")
+    print(f"File    : {filename} ({size_mb:.2f} MB)")
     print(f"Repo    : {args.repo}")
-    print(f"Privāts : {'Jā' if args.private else 'Nē'}")
-    print(f"Zars    : {args.branch}")
-    print("Savienojas ar HuggingFace...")
+    print(f"Private : {'Yes' if args.private else 'No'}")
+    print(f"Branch  : {args.branch}")
+    print("Connecting to HuggingFace...")
     sys.stdout.flush()
 
     api = HfApi(token=args.token)
 
-    # Izveido repo ja neeksistē
+    # Create repo if it doesn't exist
     try:
         create_repo(
             repo_id=args.repo,
@@ -57,13 +57,13 @@ def main():
             token=args.token,
             exist_ok=True,
         )
-        print(f"Repo gatavs: https://huggingface.co/datasets/{args.repo}")
+        print(f"Repo ready: https://huggingface.co/datasets/{args.repo}")
     except Exception as e:
-        print(f"Repo kļūda: {e}")
+        print(f"Repo error: {e}")
         sys.exit(1)
 
-    # Augšuplādē failu
-    print(f"Augšuplādē {filename}...")
+    # Upload file
+    print(f"Uploading {filename}...")
     sys.stdout.flush()
 
     try:
@@ -75,13 +75,13 @@ def main():
             commit_message=args.message,
             token=args.token,
         )
-        print(f"\n✅ Veiksmīgi augšuplādēts!")
+        print(f"\n✅ Successfully uploaded!")
         print(f"URL : https://huggingface.co/datasets/{args.repo}")
-        print(f"Fails: {filename}")
-        print(f"Izmērs: {size_mb:.2f} MB")
-        print("Pabeigts!")
+        print(f"File: {filename}")
+        print(f"Size: {size_mb:.2f} MB")
+        print("Done!")
     except Exception as e:
-        print(f"Augšuplādes kļūda: {e}")
+        print(f"Upload error: {e}")
         sys.exit(1)
 
     sys.stdout.flush()

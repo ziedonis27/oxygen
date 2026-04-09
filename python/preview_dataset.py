@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Datu priekšskatījums — atgriež pirmos N ierakstus JSON formātā ar statistiku.
+Data preview — returns the first N records as JSON with statistics.
 """
 import argparse
 import json
@@ -30,7 +30,7 @@ def save_file(path: str, records: list):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Datu priekšskatījums")
+    parser = argparse.ArgumentParser(description="Data preview")
     parser.add_argument("--input",   required=True)
     parser.add_argument("--action",  default="preview", choices=["preview", "delete", "save"])
     parser.add_argument("--offset",  type=int, default=0)
@@ -41,13 +41,13 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(json.dumps({"error": f"Fails nav atrasts: {args.input}"}))
+        print(json.dumps({"error": f"File not found: {args.input}"}))
         sys.exit(1)
 
     records = load_file(args.input)
     total   = len(records)
 
-    # Dzēšana
+    # Delete
     if args.action == "delete" and args.delete_indices:
         indices = set(int(i) for i in args.delete_indices.split(",") if i.strip().isdigit())
         new_records = [r for i, r in enumerate(records) if i not in indices]
@@ -61,7 +61,7 @@ def main():
         }))
         return
 
-    # Meklēšana + lapošana
+    # Search + pagination
     search = args.search.lower().strip()
     if search:
         filtered = []
@@ -75,7 +75,7 @@ def main():
     filtered_total = len(filtered)
     page_items     = filtered[args.offset: args.offset + args.limit]
 
-    # Lauku statistika
+    # Field statistics
     all_keys: set = set()
     for _, r in filtered[:200]:
         all_keys.update(r.keys())

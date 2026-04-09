@@ -1,10 +1,10 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Apvieno vairākus Alpaca JSON failus vienā, izlaižot dublējumus.
-Ievieto merge_alpaca.py tajā pašā mapē kur Alpaca JSON faili un palaid:
+Merges multiple Alpaca JSON files into one, skipping duplicates.
+Place merge_alpaca.py in the same folder as your Alpaca JSON files and run:
     python merge_alpaca.py
 
-Rezultāts: alpaca_merged.json
+Output: alpaca_merged.json
 """
 
 import glob
@@ -14,18 +14,18 @@ import sys
 
 
 def load_json(path: str):
-    print(f"Lasa: {os.path.basename(path)}")
+    print(f"Reading: {os.path.basename(path)}")
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            print(f"  -> {len(data)} ieraksti")
+            print(f"  -> {len(data)} records")
             return data
         else:
-            print("  Bridinajums: fails nav masivs — izlaists")
+            print("  Warning: file is not an array — skipped")
             return []
     except Exception as e:
-        print(f"  Kludas: {e}")
+        print(f"  Error: {e}")
         return []
 
 
@@ -36,7 +36,7 @@ def main():
     _args, _ = _p.parse_known_args()
     script_dir = _args.folder if _args.folder else os.path.dirname(os.path.abspath(__file__))
 
-    # Meklē visus .json failus izņemot jau merged
+    # Find all .json files except already merged
     json_files = glob.glob(os.path.join(script_dir, "*.json"))
     json_files = [
         f for f in json_files
@@ -44,10 +44,10 @@ def main():
     ]
 
     if not json_files:
-        print(f"Nav atrasts neviens .json fails mape:\n  {script_dir}")
+        print(f"No .json files found in folder:\n  {script_dir}")
         sys.exit(0)
 
-    print(f"Atrasti {len(json_files)} JSON faili:\n")
+    print(f"Found {len(json_files)} JSON files:\n")
 
     all_records = []
     total_loaded = 0
@@ -57,9 +57,9 @@ def main():
         all_records.extend(records)
         total_loaded += len(records)
 
-    print(f"\nKopaa ielādēti : {total_loaded} ieraksti")
+    print(f"\nTotal loaded   : {total_loaded} records")
 
-    # Izlaiž dublējumus pēc 'instruction' lauka
+    # Skip duplicates by 'instruction' field
     seen = set()
     unique_records = []
     duplicates = 0
@@ -74,18 +74,18 @@ def main():
         seen.add(key)
         unique_records.append(rec)
 
-    print(f"Dublejumi      : {duplicates}")
-    print(f"Unikāli        : {len(unique_records)}")
+    print(f"Duplicates     : {duplicates}")
+    print(f"Unique         : {len(unique_records)}")
 
-    # Saglabā rezultātu
+    # Save result
     output_path = os.path.join(script_dir, "alpaca_merged.json")
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(unique_records, f, ensure_ascii=False, indent=2)
 
     size_mb = os.path.getsize(output_path) / 1024 / 1024
-    print(f"\nRezultats : {output_path}")
-    print(f"Izmers    : {size_mb:.2f} MB")
-    print("\nGatavs! Augshupieladejiet alpaca_merged.json uz Colab.")
+    print(f"\nOutput : {output_path}")
+    print(f"Size   : {size_mb:.2f} MB")
+    print("\nDone! Upload alpaca_merged.json to Colab.")
 
 
 if __name__ == "__main__":

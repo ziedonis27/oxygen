@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Konverte JSON/JSONL datasetu Qwen fine-tuning formātā (JSONL).
-Ievieto convert_to_qwen.py tajā pašā mapē kur JSON/JSONL faili un palaid:
+Converts JSON/JSONL dataset to Qwen fine-tuning format (JSONL).
+Place convert_to_qwen.py in the same folder as your JSON/JSONL files and run:
     python convert_to_qwen.py
 
-Rezultāts: qwen_finetune.jsonl — gatavs Qwen fine-tuning vajadzībām.
+Output: qwen_finetune.jsonl — ready for Qwen fine-tuning.
 """
 
 import glob
@@ -45,12 +45,12 @@ def format_record(record: dict):
 
 
 def load_file(input_path: str):
-    """Nolasa gan JSON masīvu, gan JSONL formātu."""
+    """Reads both JSON array and JSONL format."""
     records = []
     with open(input_path, "r", encoding="utf-8") as f:
         content = f.read().strip()
 
-    # Mēģina kā JSON masīvu
+    # Try as JSON array
     if content.startswith("["):
         try:
             records = json.loads(content)
@@ -58,7 +58,7 @@ def load_file(input_path: str):
         except json.JSONDecodeError:
             pass
 
-    # Mēģina kā JSONL (rinda pēc rindas)
+    # Try as JSONL (line by line)
     for i, line in enumerate(content.splitlines(), 1):
         line = line.strip()
         if not line:
@@ -66,22 +66,22 @@ def load_file(input_path: str):
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError as e:
-            print(f"  Bridinajums: rinda {i} izlaista — {e}")
+            print(f"  Warning: line {i} skipped — {e}")
 
     return records
 
 
 def convert_file(input_path: str, out_file):
-    print(f"Apstrada: {os.path.basename(input_path)}")
+    print(f"Processing: {os.path.basename(input_path)}")
 
     try:
         data = load_file(input_path)
     except Exception as e:
-        print(f"  Kludas: {e}")
+        print(f"  Error: {e}")
         return 0, 0
 
     if not data:
-        print("  Bridinajums: fails ir tukss vai neizdevas nolasit.")
+        print("  Warning: file is empty or could not be read.")
         return 0, 0
 
     ok = 0
@@ -95,32 +95,32 @@ def convert_file(input_path: str, out_file):
         out_file.write(json.dumps(formatted, ensure_ascii=False) + "\n")
         ok += 1
 
-    print(f"  -> {ok} ieraksti konverteti, {skipped} izlaisti (trukst dati)")
+    print(f"  -> {ok} records converted, {skipped} skipped (missing data)")
     return ok, skipped
 
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # Meklē gan .json, gan .jsonl failus
+    # Find both .json and .jsonl files
     json_files = (
         glob.glob(os.path.join(script_dir, "*.json")) +
         glob.glob(os.path.join(script_dir, "*.jsonl"))
     )
 
-    # Izfiltre jau sadalitas dalas un ieprieksejos rezultatus
+    # Filter out already-converted output files
     json_files = [
         f for f in json_files
         if "qwen_finetune" not in os.path.basename(f)
     ]
 
     if not json_files:
-        print(f"Nav atrasts neviens .json vai .jsonl fails mape:\n  {script_dir}")
+        print(f"No .json or .jsonl files found in folder:\n  {script_dir}")
         sys.exit(0)
 
     output_path = os.path.join(script_dir, "qwen_finetune.jsonl")
 
-    print(f"Atrasti {len(json_files)} faili mape: {script_dir}\n")
+    print(f"Found {len(json_files)} files in: {script_dir}\n")
 
     total_ok = 0
     total_skipped = 0
@@ -133,11 +133,11 @@ def main():
 
     size_mb = os.path.getsize(output_path) / 1024 / 1024
 
-    print(f"\nRezultats : {output_path}")
-    print(f"Kopaa     : {total_ok} ieraksti")
-    print(f"Izlaisti  : {total_skipped}")
-    print(f"Izmers    : {size_mb:.2f} MB")
-    print("\nGatavs Qwen fine-tuning vajadzibam!")
+    print(f"\nOutput  : {output_path}")
+    print(f"Total   : {total_ok} records")
+    print(f"Skipped : {total_skipped}")
+    print(f"Size    : {size_mb:.2f} MB")
+    print("\nReady for Qwen fine-tuning!")
 
 
 if __name__ == "__main__":

@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
 """
-Valodu filtrs — nosaka un filtrē ierakstus pēc valodas.
+Language filter — detects and filters records by language.
 
-Atbalstītās valodas:
-  en  — Angļu
-  lv  — Latviešu
-  ru  — Krievu
-  de  — Vācu
-  fr  — Franču
-  es  — Spāņu
-  zh  — Ķīniešu
-  ja  — Japāņu
-  auto — Auto (saglabā visu, pievieno _lang lauku)
+Supported languages:
+  en  — English
+  lv  — Latvian
+  ru  — Russian
+  de  — German
+  fr  — French
+  es  — Spanish
+  zh  — Chinese
+  ja  — Japanese
+  auto — Auto (keeps all, adds _lang field)
 
-Lietošana:
-    python language_filter.py --input fails.json --lang en
-    python language_filter.py --input fails.json --lang en,lv --stats-only
+Usage:
+    python language_filter.py --input file.json --lang en
+    python language_filter.py --input file.json --lang en,lv --stats-only
 
-Nepieciešams (neobligāts):
-    pip install langdetect   vai   conda install -c conda-forge langdetect
+Optional:
+    pip install langdetect   or   conda install -c conda-forge langdetect
 """
 
 import argparse
@@ -28,7 +28,7 @@ import re
 import sys
 from collections import Counter
 
-# Mēģina importēt langdetect
+# Try to import langdetect
 try:
     from langdetect import detect, DetectorFactory
     from langdetect.lang_detect_exception import LangDetectException
@@ -39,8 +39,8 @@ except ImportError:
 
 
 # ─────────────────────────────────────────
-# Viegla rezerves valodas noteikšana
-# (darbojas bez langdetect)
+# Lightweight fallback language detection
+# (works without langdetect)
 # ─────────────────────────────────────────
 
 LV_CHARS  = set("āčēģīķļņšūžĀČĒĢĪĶĻŅŠŪŽ")
@@ -53,7 +53,7 @@ ES_CHARS  = set("áéíóúüñÁÉÍÓÚÜÑ¿¡")
 
 
 def fast_detect(text: str) -> str:
-    """Ātra valodas noteikšana bez ML bibliotēkas."""
+    """Fast language detection without ML library."""
     if not text or len(text.strip()) < 5:
         return "unknown"
 
@@ -61,77 +61,77 @@ def fast_detect(text: str) -> str:
     chars  = Counter(sample)
     total  = max(len(sample), 1)
 
-    # Latviešu — unikālas rakstzīmes (ķ, ļ, ģ u.c.)
+    # Latvian — unique characters (ķ, ļ, ģ etc.)
     lv_count = sum(chars.get(c, 0) for c in LV_CHARS)
     if lv_count / total > 0.02:
         return "lv"
 
-    # Krievu — kirilica
+    # Russian — Cyrillic
     ru_count = sum(chars.get(c, 0) for c in RU_CHARS)
     if ru_count / total > 0.1:
         return "ru"
 
-    # Ķīniešu
+    # Chinese
     zh_count = sum(1 for c in sample if ZH_RANGE[0] <= ord(c) <= ZH_RANGE[1])
     if zh_count / total > 0.05:
         return "zh"
 
-    # Japāņu
+    # Japanese
     ja_count = sum(1 for c in sample if any(s <= ord(c) <= e for s, e in JA_RANGES))
     if ja_count / total > 0.03:
         return "ja"
 
-    # Vācu
+    # German
     de_count = sum(chars.get(c, 0) for c in DE_CHARS)
     if de_count / total > 0.01:
         return "de"
 
-    # Franču
+    # French
     fr_count = sum(chars.get(c, 0) for c in FR_CHARS)
     if fr_count / total > 0.01:
         return "fr"
 
-    # Spāņu
+    # Spanish
     es_count = sum(chars.get(c, 0) for c in ES_CHARS)
     if es_count / total > 0.01:
         return "es"
 
-    return "en"  # noklusējums — latīņu alfabēts = angļu
+    return "en"  # default — Latin alphabet = English
 
 
-# Minimālais teksta garums uzticamai noteikšanai
+# Minimum text length for reliable detection
 MIN_RELIABLE_LENGTH = 40
 
 
 def detect_language(text: str) -> str:
     """
-    Nosaka valodu ar divpakāpju pieeju:
-    1. fast_detect — ātra Unicode analīze (LV/RU/ZH/JA ir ļoti precīza)
-    2. langdetect  — ML modelis angļu/DE/FR/ES atšķiršanai (ja teksts pietiekami garš)
+    Detects language using a two-stage approach:
+    1. fast_detect — quick Unicode analysis (LV/RU/ZH/JA very accurate)
+    2. langdetect  — ML model for English/DE/FR/ES distinction (if text long enough)
 
-    Īsiem tekstiem (<40 rakstzīmes) izmanto tikai fast_detect,
-    jo langdetect kļūdās ar īsiem tekstiem.
+    For short texts (<40 chars) uses only fast_detect,
+    as langdetect is unreliable with short texts.
     """
     if not text or len(text.strip()) < 5:
         return "unknown"
 
     text = text.strip()
 
-    # 1. Vispirms fast_detect — ļoti precīzs ne-latīņu valodām
+    # 1. fast_detect first — very accurate for non-Latin languages
     fast_result = fast_detect(text)
     if fast_result in ("lv", "ru", "zh", "ja"):
-        return fast_result  # Augsta pārliecība — atgriežam uzreiz
+        return fast_result  # High confidence — return immediately
 
-    # 2. Ja teksts ir pārāk īss — neuzticamies langdetect
+    # 2. Text too short — don't trust langdetect
     if len(text) < MIN_RELIABLE_LENGTH:
-        return fast_result  # "en", "de", "fr", "es" vai "unknown"
+        return fast_result  # "en", "de", "fr", "es" or "unknown"
 
-    # 3. Izmantojam langdetect ilgākiem tekstiem
+    # 3. Use langdetect for longer texts
     if HAS_LANGDETECT:
         try:
             ld_result = detect(text[:1500])
-            # Ja langdetect saka "nl" (holandiešu) bet nav holandiešu rakstzīmju
-            # un fast_detect saka "en" — uzticamies fast_detect
+            # If langdetect says "nl" (Dutch) but no Dutch characters found
+            # and fast_detect says "en" — trust fast_detect
             nl_chars = set("ĳĲ")
             nl_specific = sum(1 for c in text if c in nl_chars)
             if ld_result == "nl" and nl_specific == 0 and fast_result == "en":
@@ -175,29 +175,29 @@ def load_file(path: str) -> list:
 
 
 LANG_NAMES = {
-    "en": "Angļu 🇬🇧",   "lv": "Latviešu 🇱🇻",
-    "ru": "Krievu 🇷🇺",   "de": "Vācu 🇩🇪",
-    "fr": "Franču 🇫🇷",   "es": "Spāņu 🇪🇸",
-    "zh": "Ķīniešu 🇨🇳",  "ja": "Japāņu 🇯🇵",
-    "nl": "Holandiešu 🇳🇱", "it": "Itāļu 🇮🇹",
-    "pt": "Portugāļu 🇵🇹", "unknown": "Nezināms ❓",
+    "en": "English 🇬🇧",    "lv": "Latvian 🇱🇻",
+    "ru": "Russian 🇷🇺",    "de": "German 🇩🇪",
+    "fr": "French 🇫🇷",     "es": "Spanish 🇪🇸",
+    "zh": "Chinese 🇨🇳",    "ja": "Japanese 🇯🇵",
+    "nl": "Dutch 🇳🇱",      "it": "Italian 🇮🇹",
+    "pt": "Portuguese 🇵🇹", "unknown": "Unknown ❓",
 }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Valodu filtrs")
-    parser.add_argument("--input",      required=True,  help="Ievades JSON/JSONL fails")
+    parser = argparse.ArgumentParser(description="Language filter")
+    parser.add_argument("--input",      required=True,  help="Input JSON/JSONL file")
     parser.add_argument("--output",     default="lang_filtered.json")
     parser.add_argument("--lang",       default="auto",
-                        help="Valoda(s): en,lv,ru,de,fr,es,zh,ja vai auto. Ar komatu: en,lv")
+                        help="Language(s): en,lv,ru,de,fr,es,zh,ja or auto. Comma-separated: en,lv")
     parser.add_argument("--field",      default="instruction",
-                        help="Noteikšanas lauks: instruction, output, both")
-    parser.add_argument("--stats-only", action="store_true", help="Tikai statistika")
-    parser.add_argument("--add-field",  action="store_true", help="Pievieno _lang lauku")
+                        help="Detection field: instruction, output, both")
+    parser.add_argument("--stats-only", action="store_true", help="Stats only")
+    parser.add_argument("--add-field",  action="store_true", help="Add _lang field")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"Kļūda: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         sys.exit(1)
 
     target_langs = (
@@ -209,18 +209,18 @@ def main():
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
 
-    method = "langdetect + fast_detect" if HAS_LANGDETECT else "iebūvētā noteikšana"
-    log(f"Ielādē  : {args.input}")
-    log(f"Metode  : {method}")
+    method = "langdetect + fast_detect" if HAS_LANGDETECT else "built-in detection"
+    log(f"Loading : {args.input}")
+    log(f"Method  : {method}")
     if not HAS_LANGDETECT:
-        log("  ℹ️  Uzlabotai noteikšanai: conda install -c conda-forge langdetect")
+        log("  ℹ️  For improved detection: conda install -c conda-forge langdetect")
     if target_langs:
-        log(f"Valodas : {', '.join(target_langs)}")
+        log(f"Languages: {', '.join(target_langs)}")
     else:
-        log("Režīms  : auto (pievieno _lang lauku visiem)")
+        log("Mode    : auto (adds _lang field to all records)")
 
     records = load_file(args.input)
-    log(f"Ieraksti: {len(records)}\nNosaka valodas...")
+    log(f"Records : {len(records)}\nDetecting languages...")
 
     lang_counts = Counter()
     results     = []
@@ -253,22 +253,22 @@ def main():
                 skipped += 1
 
         if (i + 1) % 2000 == 0:
-            log(f"  Apstrādāti: {i+1}/{len(records)}")
+            log(f"  Processed: {i+1}/{len(records)}")
 
-    # Statistika priekš stderr loga
+    # Statistics to stderr log
     total = len(records)
     log("\n" + "=" * 50)
-    log("VALODU SADALĪJUMS:")
+    log("LANGUAGE DISTRIBUTION:")
     for lang, cnt in lang_counts.most_common():
         name = LANG_NAMES.get(lang, lang)
         bar  = "█" * int(cnt / max(total, 1) * 30)
         pct  = cnt / max(total, 1) * 100
         log(f"  {lang:8s} {name:22s} {bar:<30} {cnt:6d} ({pct:.1f}%)")
 
-    log(f"\nKopā ieraksti  : {total}")
+    log(f"\nTotal records  : {total}")
     if not auto_mode:
-        log(f"Saglabāti      : {len(results)}")
-        log(f"Izfiltrēti     : {skipped}")
+        log(f"Saved          : {len(results)}")
+        log(f"Filtered out   : {skipped}")
 
     if not args.stats_only:
         out_dir = os.path.dirname(os.path.abspath(args.output))
@@ -277,13 +277,13 @@ def main():
         with open(args.output, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)
         size_mb = os.path.getsize(args.output) / 1024 / 1024
-        log(f"\nSaglabāts : {os.path.abspath(args.output)}")
-        log(f"Ieraksti  : {len(results)}")
-        log(f"Izmērs    : {size_mb:.2f} MB")
+        log(f"\nSaved    : {os.path.abspath(args.output)}")
+        log(f"Records  : {len(results)}")
+        log(f"Size     : {size_mb:.2f} MB")
 
-    log("Pabeigts!")
+    log("Done!")
 
-    # IZVADE PRIEKS UI (STDOUT)
+    # OUTPUT FOR UI (STDOUT)
     summary = {
         "total": total,
         "saved": len(results),

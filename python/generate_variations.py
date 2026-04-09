@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Variāciju ģenerators — izmanto Claude API lai ģenerētu jaunas variācijas
-no esošiem dataset ierakstiem.
+Variation generator — uses Claude API to generate new variations
+from existing dataset records.
 
-Lietošana:
-    python generate_variations.py --input fails.json --count 5
+Usage:
+    python generate_variations.py --input file.json --count 5
 
-API atslēga tiek nolasīta no ANTHROPIC_API_KEY vides mainīgā (drošāk).
+API key is read from ANTHROPIC_API_KEY environment variable (recommended).
 
-Nepieciešams:
+Requirements:
     pip install anthropic
 """
 
@@ -18,12 +18,13 @@ import os
 import sys
 import time
 import random
+from typing import Optional  # FIX: dict | None not supported in Python < 3.10
 
 try:
     import anthropic
 except ImportError:
-    print("Kludas: trukst 'anthropic' biblioteka.")
-    print("Instalejiet: pip install anthropic")
+    print("Error: missing 'anthropic' library.")
+    print("Install: pip install anthropic")
     sys.exit(1)
 
 
@@ -56,8 +57,9 @@ def get_text(r: dict) -> tuple:
     return "", "", ""
 
 
-def generate_variation(client, instruction: str, output: str, style: str) -> dict | None:
-    """Ģenerē vienu variāciju izmantojot Claude API."""
+# FIX: dict | None -> Optional[dict] (supported Python 3.8+)
+def generate_variation(client, instruction: str, output: str, style: str) -> Optional[dict]:
+    """Generates one variation using Claude API."""
 
     styles = {
         "rephrase":  "Rephrase the instruction differently but keep the same programming task. Change wording, add/remove context.",
@@ -95,7 +97,7 @@ Respond ONLY with valid JSON in this exact format, no other text:
 
         text = response.content[0].text.strip()
 
-        # Izvelk JSON
+        # Extract JSON
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
@@ -112,48 +114,46 @@ Respond ONLY with valid JSON in this exact format, no other text:
     except json.JSONDecodeError:
         pass
     except Exception as e:
-        print(f"  API kludas: {e}")
+        print(f"  API error: {e}")
         time.sleep(2)
 
     return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Variāciju ģenerators ar Claude API")
-    parser.add_argument("--input",      required=True,  help="Ievades JSON/JSONL fails")
+    parser = argparse.ArgumentParser(description="Variation generator with Claude API")
+    parser.add_argument("--input",      required=True,  help="Input JSON/JSONL file")
     parser.add_argument("--output",     default="variations_output.json")
-    # --api-key saglabāts savietojamībai, bet prioritāte ir ANTHROPIC_API_KEY vides mainīgajam
-    parser.add_argument("--api-key",    default="", help="Anthropic API atslēga (ieteicams izmantot ANTHROPIC_API_KEY)")
-    parser.add_argument("--count",      type=int, default=3,  help="Variāciju skaits katram ierakstam")
-    parser.add_argument("--max-source", type=int, default=100, help="Maks. avota ierakstu skaits (0=visi)")
+    parser.add_argument("--api-key",    default="", help="Anthropic API key (recommended: use ANTHROPIC_API_KEY env var)")
+    parser.add_argument("--count",      type=int, default=3,  help="Variations per record")
+    parser.add_argument("--max-source", type=int, default=100, help="Max source records (0=all)")
     parser.add_argument("--style",      default="mixed",
                         choices=["rephrase", "harder", "simpler", "different", "mixed"],
-                        help="Variāciju stils")
-    parser.add_argument("--delay",      type=float, default=0.5, help="Pauze starp API izsaukumiem (s)")
+                        help="Variation style")
+    parser.add_argument("--delay",      type=float, default=0.5, help="Delay between API calls (s)")
     args = parser.parse_args()
 
-    # 🔐 API atslēga: vispirms vides mainīgais (drošāk), tad arguments
+    # API key: env var first (safer), then argument
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip() or args.api_key.strip()
     if not api_key:
-        print("Kludas: nav norādīta Anthropic API atslēga.")
-        print("Iespējas:")
-        print("  1. Iestatiet vides mainīgo: set ANTHROPIC_API_KEY=sk-ant-...")
-        print("  2. Norādiet argumentu: --api-key sk-ant-...")
+        print("Error: Anthropic API key not provided.")
+        print("Options:")
+        print("  1. Set environment variable: set ANTHROPIC_API_KEY=sk-ant-...")
+        print("  2. Pass as argument: --api-key sk-ant-...")
         sys.exit(1)
 
     if not os.path.exists(args.input):
-        print(f"Kludas: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         sys.exit(1)
 
-    print(f"Ielādē: {args.input}")
+    print(f"Loading: {args.input}")
     records = load_file(args.input)
-    print(f"Ielādēti: {len(records)} ieraksti")
+    print(f"Loaded: {len(records)} records")
 
-    # Ierobežo avota ierakstus
     source = records
     if args.max_source > 0 and len(records) > args.max_source:
         source = random.sample(records, args.max_source)
-        print(f"Izmanto: {args.max_source} nejauši izvēlēti ieraksti")
+        print(f"Using: {args.max_source} randomly selected records")
 
     styles_pool = ["rephrase", "harder", "simpler", "different"]
     client = anthropic.Anthropic(api_key=api_key)
@@ -163,8 +163,8 @@ def main():
     done = 0
     errors = 0
 
-    print(f"\nĢenerē {total} variācijas ({args.count} katram ierakstam)...")
-    print(f"Stils: {args.style} | Pauze: {args.delay}s")
+    print(f"\nGenerating {total} variations ({args.count} per record)...")
+    print(f"Style: {args.style} | Delay: {args.delay}s")
     print("=" * 50)
     sys.stdout.flush()
 
@@ -177,8 +177,8 @@ def main():
             style = args.style if args.style != "mixed" else random.choice(styles_pool)
             done += 1
             percent = int(done / total * 100) if total > 0 else 0
-            print(f"  [{done}/{total}] ({percent}%) Ieraksts {i+1}, variācija {v+1} ({style})...")
-            sys.stdout.flush()  # Reāllaika progress
+            print(f"  [{done}/{total}] ({percent}%) Record {i+1}, variation {v+1} ({style})...")
+            sys.stdout.flush()
 
             variation = generate_variation(client, instr, out, style)
 
@@ -186,12 +186,11 @@ def main():
                 results.append(variation)
             else:
                 errors += 1
-                print(f"    Bridinajums: variācija izlaista")
+                print(f"    Warning: variation skipped")
 
             if args.delay > 0:
                 time.sleep(args.delay)
 
-    # Saglabā
     out_dir = os.path.dirname(os.path.abspath(args.output))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -202,11 +201,11 @@ def main():
     size_mb = os.path.getsize(args.output) / 1024 / 1024
 
     print("=" * 50)
-    print(f"Rezultāts  : {args.output}")
-    print(f"Ģenerēti   : {len(results)} variācijas")
-    print(f"Kludas     : {errors}")
-    print(f"Izmērs     : {size_mb:.2f} MB")
-    print(f"Pabeigts!")
+    print(f"Output     : {args.output}")
+    print(f"Generated  : {len(results)} variations")
+    print(f"Errors     : {errors}")
+    print(f"Size       : {size_mb:.2f} MB")
+    print(f"Done!")
     sys.stdout.flush()
 
 

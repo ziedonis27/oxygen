@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dashboard skripts — analizē darba mapes failus un atgriež statistiku JSON formātā.
+Dashboard script — analyzes files in the working folder and returns statistics as JSON.
 """
 import argparse
 import json
@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def analyze_json_file(path: str) -> dict:
-    """Analizē vienu JSON/JSONL failu — atgriež ierakstu skaitu un izmēru."""
+    """Analyzes a single JSON/JSONL file — returns record count and size."""
     try:
         size_mb = os.path.getsize(path) / 1024 / 1024
         with open(path, "r", encoding="utf-8") as f:
@@ -34,7 +34,7 @@ def main():
 
     folder = Path(args.folder)
     if not folder.exists():
-        print(json.dumps({"error": "Mape nav atrasta"}))
+        print(json.dumps({"error": "Folder not found"}))
         sys.exit(1)
 
     files = []
@@ -50,7 +50,7 @@ def main():
             total_records += info["count"]
             total_size_mb += info["size_mb"]
 
-    # Apakšmapju faili (1 līmenis dziļi)
+    # Subfolder files (1 level deep)
     for subdir in folder.iterdir():
         if subdir.is_dir() and subdir.name not in ["node_modules", ".git", "target", "python", ".svelte-kit"]:
             for ext in ["*.json", "*.jsonl"]:
@@ -61,7 +61,7 @@ def main():
                     total_records += info["count"]
                     total_size_mb += info["size_mb"]
 
-    # Parquet faili
+    # Parquet files
     parquet_count = len(list(folder.glob("*.parquet")))
 
     result = {

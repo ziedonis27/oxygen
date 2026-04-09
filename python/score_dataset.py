@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Kvalitātes novērtēšanas skripts — piešķir punktus (1–10) katram ierakstam
-pēc vairākiem kritērijiem un saglabā rezultātus ar score lauku.
+Quality scoring script — assigns scores (1–10) to each record
+based on multiple criteria and saves results with a score field.
 
-Kritēriji:
-  - Instrukcijas garums (vārdi)
-  - Output garums (vārdi)
-  - Koda bloku klātbūtne
-  - Valodas skaidrība
-  - Dublicētu instrukciju sods
-  - Īsu/bezjēdzīgu atbilžu sods
+Criteria:
+  - Instruction length (words)
+  - Output length (words)
+  - Presence of code blocks
+  - Language clarity
+  - Penalty for duplicate instructions
+  - Penalty for short/meaningless answers
 
-Lietošana:
-    python score_dataset.py --input fails.json --output scored.json --min-score 5
+Usage:
+    python score_dataset.py --input file.json --output scored.json --min-score 5
 """
 
 import argparse
@@ -56,7 +56,7 @@ def get_text(r: dict) -> tuple:
         return s(r.get("input")), "", s(r.get("script"))
     return "", "", ""
 
-# Atbalsts UTF-8
+# UTF-8 support
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -70,18 +70,18 @@ def count_code_blocks(text: str) -> int:
 
 
 def count_code_lines(text: str) -> int:
-    """Skaita koda rindas ``` blokos."""
+    """Counts code lines inside ``` blocks."""
     blocks = re.findall(r"```.*?```", text, re.DOTALL)
     return sum(len(b.splitlines()) for b in blocks)
 
 
 def has_structured_output(text: str) -> bool:
-    """Pārbauda vai output ir strukturēts (saraksti, virsraksti, kods)."""
+    """Checks whether output is structured (lists, headings, code)."""
     return bool(re.search(r"(```|#{1,3} |\n[-*] |\n\d+\. )", text))
 
 
 def detect_language(text: str) -> str:
-    """Vienkārša valodas noteikšana."""
+    """Simple language detection."""
     lv_chars = len(re.findall(r"[āčēģīķļņšūž]", text.lower()))
     ru_chars = len(re.findall(r"[а-яё]", text.lower()))
     if lv_chars > 3:
@@ -93,8 +93,8 @@ def detect_language(text: str) -> str:
 
 def score_record(instr: str, inp: str, out: str) -> dict:
     """
-    Novērtē ierakstu un atgriež detalizētu score.
-    Kopējais score: 1–10 punkti.
+    Scores a record and returns a detailed breakdown.
+    Total score: 1–10 points.
     """
     scores = {}
     reasons = []
@@ -104,29 +104,29 @@ def score_record(instr: str, inp: str, out: str) -> dict:
     code_blocks = count_code_blocks(out)
     code_lines  = count_code_lines(out)
 
-    # 1. Instrukcijas garums (0–2 punkti)
+    # 1. Instruction length (0–2 points)
     if instr_words >= 15:
         scores["instr_len"] = 2
     elif instr_words >= 7:
         scores["instr_len"] = 1
-        reasons.append("īsa instrukcija")
+        reasons.append("short instruction")
     else:
         scores["instr_len"] = 0
-        reasons.append("ļoti īsa instrukcija")
+        reasons.append("very short instruction")
 
-    # 2. Output garums (0–3 punkti)
+    # 2. Output length (0–3 points)
     if out_words >= 150:
         scores["out_len"] = 3
     elif out_words >= 60:
         scores["out_len"] = 2
     elif out_words >= 20:
         scores["out_len"] = 1
-        reasons.append("īss output")
+        reasons.append("short output")
     else:
         scores["out_len"] = 0
-        reasons.append("ļoti īss output")
+        reasons.append("very short output")
 
-    # 3. Kods outputā (0–2 punkti)
+    # 3. Code in output (0–2 points)
     if code_blocks >= 2 or code_lines >= 20:
         scores["code"] = 2
     elif code_blocks == 1 or code_lines >= 5:
@@ -134,31 +134,31 @@ def score_record(instr: str, inp: str, out: str) -> dict:
     else:
         scores["code"] = 0
 
-    # 4. Struktūra (0–1 punkts)
+    # 4. Structure (0–1 point)
     if has_structured_output(out):
         scores["structure"] = 1
     else:
         scores["structure"] = 0
-        reasons.append("nav struktūras")
+        reasons.append("no structure")
 
-    # 5. Valodas konsekvence (0–1 punkts)
+    # 5. Language consistency (0–1 point)
     lang_instr = detect_language(instr)
     lang_out   = detect_language(out)
     if lang_instr == lang_out:
         scores["lang"] = 1
     else:
         scores["lang"] = 0
-        reasons.append(f"valodu neatbilstība ({lang_instr}≠{lang_out})")
+        reasons.append(f"language mismatch ({lang_instr}≠{lang_out})")
 
-    # 6. Sods par bezsaturu (−1)
+    # 6. Penalty for empty/useless content (−1)
     penalty = 0
     bad_phrases = ["i don't know", "i cannot", "as an ai", "i'm sorry", "es nezinu", "es nevaru"]
     out_lower = out.lower()
     if any(p in out_lower for p in bad_phrases):
         penalty -= 1
-        reasons.append("bezsatura atbilde")
+        reasons.append("low-value answer")
 
-    # Kopējais score
+    # Total score
     raw = sum(scores.values()) + penalty
     total = max(1, min(10, raw))
 
@@ -177,26 +177,26 @@ def score_record(instr: str, inp: str, out: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Dataset kvalitātes novērtētājs")
-    parser.add_argument("--input",     required=True,  help="Ievades JSON/JSONL fails")
-    parser.add_argument("--output",    default="scored_output.json", help="Izvades fails")
-    parser.add_argument("--min-score", type=int, default=0,  help="Min. score filtrēšanai (0=visi)")
-    parser.add_argument("--max-score", type=int, default=10, help="Max. score filtrēšanai")
-    parser.add_argument("--stats-only", action="store_true", help="Tikai statistika, nesaglabā failu")
-    parser.add_argument("--top",       type=int, default=0,  help="Saglabā tikai top N ierakstus")
+    parser = argparse.ArgumentParser(description="Dataset quality scorer")
+    parser.add_argument("--input",     required=True,  help="Input JSON/JSONL file")
+    parser.add_argument("--output",    default="scored_output.json", help="Output file")
+    parser.add_argument("--min-score", type=int, default=0,  help="Min score for filtering (0=all)")
+    parser.add_argument("--max-score", type=int, default=10, help="Max score for filtering")
+    parser.add_argument("--stats-only", action="store_true", help="Stats only, do not save file")
+    parser.add_argument("--top",       type=int, default=0,  help="Save only top N records")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"Kludas: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         sys.exit(1)
 
     def log(msg):
         print(msg, file=sys.stderr, flush=True)
 
-    log(f"Ielāde: {args.input}")
+    log(f"Loading: {args.input}")
     records = load_file(args.input)
-    log(f"Ielādēti: {len(records)} ieraksti")
-    log("Novērtē...")
+    log(f"Loaded: {len(records)} records")
+    log("Scoring...")
 
     scored = []
     score_dist = Counter()
@@ -217,7 +217,7 @@ def main():
         scored.append(new_rec)
 
         if (i + 1) % 1000 == 0:
-            log(f"  Apstrādāti: {i+1}/{len(records)}")
+            log(f"  Processed: {i+1}/{len(records)}")
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
     filtered = [r for r in scored if args.min_score <= r["_score"] <= args.max_score]
@@ -226,7 +226,7 @@ def main():
         filtered = filtered[:args.top]
 
     log("\n" + "=" * 50)
-    log("KVALITĀTES SADALĪJUMS:")
+    log("QUALITY DISTRIBUTION:")
     total_scored = len(scored)
     for s in range(10, 0, -1):
         cnt = score_dist.get(s, 0)
@@ -237,9 +237,9 @@ def main():
     total_sum = sum(r["_score"] for r in scored)
     avg = total_sum / max(total_scored, 1) if total_scored > 0 else 0
 
-    log(f"\nVidējais score : {avg:.2f}/10")
-    log(f"Kopā ieraksti  : {total_scored}")
-    log(f"Pēc filtrēšanas: {len(filtered)}")
+    log(f"\nAverage score  : {avg:.2f}/10")
+    log(f"Total records  : {total_scored}")
+    log(f"After filtering: {len(filtered)}")
 
     if not args.stats_only:
         out_records = [dict(r) for r in filtered]
@@ -251,12 +251,12 @@ def main():
             json.dump(out_records, f, ensure_ascii=False, indent=2)
 
         size_mb = os.path.getsize(args.output) / 1024 / 1024
-        log(f"\nSaglabāts : {os.path.abspath(args.output)}")
-        log(f"Izmērs    : {size_mb:.2f} MB")
+        log(f"\nSaved  : {os.path.abspath(args.output)}")
+        log(f"Size   : {size_mb:.2f} MB")
 
-    log("Pabeigts!")
+    log("Done!")
 
-    # IZVADE PRIEKS UI (TIKAI STDOUT)
+    # OUTPUT FOR UI (STDOUT ONLY)
     summary = {
         "total": total_scored,
         "saved": len(filtered),

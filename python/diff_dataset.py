@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Datasetu salīdzinājums (Diff) — salīdzina divus JSON/JSONL failus pēc instrukcijām.
+Dataset diff — compares two JSON/JSONL files by their instructions.
 """
 import argparse
 import json
@@ -25,7 +25,7 @@ def load_file(path: str) -> list:
 
 
 def get_key(r: dict) -> str:
-    """Atgriež unikālu atslēgu ierakstam salīdzināšanai."""
+    """Returns a unique key for a record for comparison."""
     for field in ("instruction", "prompt", "problem", "question"):
         if field in r:
             return r[field].strip()[:200]
@@ -48,15 +48,15 @@ def get_output(r: dict) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Datasetu Diff")
+    parser = argparse.ArgumentParser(description="Dataset Diff")
     parser.add_argument("--file-a",  required=True)
     parser.add_argument("--file-b",  required=True)
-    parser.add_argument("--limit",   type=int, default=50, help="Max diff ierakstu skaits")
+    parser.add_argument("--limit",   type=int, default=50, help="Max diff records to show")
     args = parser.parse_args()
 
     for p in (args.file_a, args.file_b):
         if not os.path.exists(p):
-            print(json.dumps({"error": f"Fails nav atrasts: {p}"}))
+            print(json.dumps({"error": f"File not found: {p}"}))
             sys.exit(1)
 
     records_a = load_file(args.file_a)
@@ -68,11 +68,11 @@ def main():
     set_a = set(keys_a.keys())
     set_b = set(keys_b.keys())
 
-    only_in_a  = set_a - set_b          # Dzēsti
-    only_in_b  = set_b - set_a          # Pievienoti
-    in_both    = set_a & set_b          # Kopīgi
+    only_in_a  = set_a - set_b          # Removed
+    only_in_b  = set_b - set_a          # Added
+    in_both    = set_a & set_b          # Common
 
-    # Mainīti — ir abos, bet output atšķiras
+    # Changed — present in both but output differs
     changed = []
     for key in in_both:
         out_a = get_output(keys_a[key])

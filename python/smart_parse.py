@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Smart Parse — automātiski analizē JSON/JSONL faila struktūru un kvalitāti.
-Atpazīst formātu, lauku tipus, valodu, kvalitāti un iesaka filtru iestatījumus.
+Smart Parse — automatically analyzes JSON/JSONL file structure and quality.
+Detects format, field types, language, quality and suggests filter settings.
 """
 
 import argparse
@@ -28,7 +28,7 @@ def load_file(path: str) -> list:
 
 def detect_format(records: list) -> str:
     if not records:
-        return "nezināms"
+        return "unknown"
     r = records[0]
     if "instruction" in r and "output" in r:
         return "alpaca"
@@ -47,7 +47,7 @@ def detect_format(records: list) -> str:
     if "input" in r and "output" in r:
         return "input/output"
     keys = list(r.keys())
-    return f"nezināms ({', '.join(keys[:5])})"
+    return f"unknown ({', '.join(keys[:5])})"
 
 def get_text(r: dict) -> tuple:
     if "instruction" in r:
@@ -70,10 +70,10 @@ def detect_language(text: str) -> str:
     ru = len(re.findall(r'[а-яёА-ЯЁ]', text))
     en = len(re.findall(r'[a-zA-Z]', text))
     if lv > 5:
-        return "Latviešu"
+        return "Latvian"
     if ru > en * 0.3:
-        return "Krievu"
-    return "Angļu"
+        return "Russian"
+    return "English"
 
 def has_code(text: str) -> bool:
     return "```" in text or "def " in text or "function " in text
@@ -84,36 +84,36 @@ def main():
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
-        print(f"Kludas: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         sys.exit(1)
 
     size_mb = os.path.getsize(args.input) / 1024 / 1024
     print(f"\n{'='*50}")
-    print(f"  SMART PARSE ANALĪZE")
+    print(f"  SMART PARSE ANALYSIS")
     print(f"{'='*50}")
-    print(f"  Fails  : {os.path.basename(args.input)}")
-    print(f"  Izmērs : {size_mb:.2f} MB")
+    print(f"  File   : {os.path.basename(args.input)}")
+    print(f"  Size   : {size_mb:.2f} MB")
 
     records = load_file(args.input)
     if not records:
-        print("  Kludas: fails ir tukss!")
+        print("  Error: file is empty!")
         sys.exit(1)
 
     fmt = detect_format(records)
-    print(f"  Formāts: {fmt}")
-    print(f"  Ieraksti: {len(records)}")
+    print(f"  Format : {fmt}")
+    print(f"  Records: {len(records)}")
 
-    # Lauku analīze
+    # Field analysis
     all_keys = Counter()
     for r in records:
         for k in r.keys():
             all_keys[k] += 1
-    print(f"\n  LAUKI:")
+    print(f"\n  FIELDS:")
     for k, v in all_keys.most_common():
         pct = v / len(records) * 100
-        print(f"    {k:<20} {v:>6} ieraksti ({pct:.0f}%)")
+        print(f"    {k:<20} {v:>6} records ({pct:.0f}%)")
 
-    # Garumu analīze
+    # Length analysis
     instr_lens, out_lens, total_lens = [], [], []
     has_code_count = 0
     has_think_count = 0
@@ -142,32 +142,32 @@ def main():
     max_out   = max(out_lens)   if out_lens else 0
     min_out   = min(out_lens)   if out_lens else 0
 
-    print(f"\n  GARUMI (vārdos):")
-    print(f"    Instrukcija vid. : {avg_instr}")
-    print(f"    Output vid.      : {avg_out}")
+    print(f"\n  LENGTHS (words):")
+    print(f"    Avg instruction  : {avg_instr}")
+    print(f"    Avg output       : {avg_out}")
     print(f"    Output min/max   : {min_out} / {max_out}")
-    print(f"    Kopā vārdi vid.  : {sum(total_lens)//len(total_lens)}")
+    print(f"    Avg total words  : {sum(total_lens)//len(total_lens)}")
 
-    print(f"\n  SATURS:")
-    print(f"    Ar kodu (```)    : {has_code_count} ({has_code_count/len(records)*100:.0f}%)")
-    print(f"    Ar <think>       : {has_think_count} ({has_think_count/len(records)*100:.0f}%)")
-    print(f"    Dublējumi        : {dupe_count} ({dupe_count/len(records)*100:.1f}%)")
+    print(f"\n  CONTENT:")
+    print(f"    With code (```)  : {has_code_count} ({has_code_count/len(records)*100:.0f}%)")
+    print(f"    With <think>     : {has_think_count} ({has_think_count/len(records)*100:.0f}%)")
+    print(f"    Duplicates       : {dupe_count} ({dupe_count/len(records)*100:.1f}%)")
 
-    # Valoda
+    # Language
     sample = " ".join([get_text(r)[0] for r in records[:50]])
     lang = detect_language(sample)
-    print(f"    Valoda           : {lang}")
+    print(f"    Language         : {lang}")
 
-    # Ieteikumi
-    print(f"\n  IETEIKUMI filtrēšanai:")
+    # Recommendations
+    print(f"\n  FILTER RECOMMENDATIONS:")
     rec_min_out = max(10, avg_out // 3)
     rec_min_instr = max(5, avg_instr // 4)
-    print(f"    --min-output  {rec_min_out}   (vid. {avg_out} → ieteicams {rec_min_out})")
-    print(f"    --min-instr   {rec_min_instr}    (vid. {avg_instr} → ieteicams {rec_min_instr})")
+    print(f"    --min-output  {rec_min_out}   (avg {avg_out} → recommended {rec_min_out})")
+    print(f"    --min-instr   {rec_min_instr}    (avg {avg_instr} → recommended {rec_min_instr})")
     if dupe_count > 0:
-        print(f"    --remove-dupes    ({dupe_count} dublējumi atrasti)")
+        print(f"    --remove-dupes    ({dupe_count} duplicates found)")
     if has_code_count > len(records) * 0.5:
-        print(f"    --require-code    ({has_code_count/len(records)*100:.0f}% jau satur kodu)")
+        print(f"    --require-code    ({has_code_count/len(records)*100:.0f}% already contain code)")
 
     print(f"{'='*50}\n")
 

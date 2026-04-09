@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-JSON/JSONL Datu Filtrs — STRĪMĒŠANAS REŽĪMS (piemērots milzīgiem failiem).
-Lietošana:
-    python filter_dataset.py [opcijas]
+JSON/JSONL Data Filter — STREAMING MODE (suitable for very large files).
+Usage:
+    python filter_dataset.py [options]
 """
 
 import argparse
@@ -11,14 +11,15 @@ import os
 import re
 import sys
 import time
+from typing import Tuple  # FIX: tuple[str,str,str] -> Tuple (Python 3.8+ compatible)
 
-# Piespiest UTF-8 kodējumu (Windows termināļiem)
+# Force UTF-8 encoding (for Windows terminals)
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# Domēnu atslēgvārdi
+# Domain keywords
 DOMAIN_KEYWORDS = {
     "svelte5":  ["svelte", "$state", "$derived", "$effect", "$props", "rune", "sveltekit"],
     "python":   ["python", "def ", "import ", "class ", "lambda", "pytest", "pip"],
@@ -29,10 +30,11 @@ DOMAIN_KEYWORDS = {
     "unreal":   ["unreal", "blueprint", "ue5", "ue4", "actor", "component", "pawn"],
 }
 
-def get_text(record: dict) -> tuple[str, str, str]:
-    """Atgriež (instruction, input, output) no jebkura formāta."""
+# FIX: tuple[str, str, str] -> Tuple[str, str, str] (Python 3.8+ compatible)
+def get_text(record: dict) -> Tuple[str, str, str]:
+    """Returns (instruction, input, output) from any supported format."""
     def s(v): return str(v) if v is not None else ""
-    
+
     if "instruction" in record:
         return (s(record.get("instruction")), s(record.get("input")), s(record.get("output")))
     if "messages" in record:
@@ -44,7 +46,6 @@ def get_text(record: dict) -> tuple[str, str, str]:
         return s(record.get("problem")), "", s(record.get("code"))
     if "prompt" in record:
         return s(record.get("prompt")), "", s(record.get("completion"))
-    # Blender / Scripting formāts
     if "script" in record:
         return s(record.get("input")), "", s(record.get("script"))
     return "", "", ""
@@ -77,10 +78,9 @@ def to_messages(instr: str, inp: str, out: str) -> dict:
     }
 
 def stream_json_array(f):
-    """Mēģina straumēt JSON masīva ierakstus pa vienam."""
+    """Attempts to stream JSON array records one by one."""
     decoder = json.JSONDecoder()
     buffer = ""
-    # Atrod sākuma [
     while True:
         chunk = f.read(1024 * 64)
         if not chunk: break
@@ -88,52 +88,51 @@ def stream_json_array(f):
         if '[' in buffer:
             buffer = buffer[buffer.find('[')+1:].strip()
             break
-    
+
     while True:
         try:
             while buffer and buffer[0] in (',', ' ', '\n', '\r', '\t', ']'):
-                if buffer[0] == ']': return # Masīva beigas
+                if buffer[0] == ']': return
                 buffer = buffer[1:].strip()
-            
+
             if not buffer:
                 chunk = f.read(1024 * 64)
                 if not chunk: break
                 buffer = chunk.strip()
                 continue
-            
+
             obj, pos = decoder.raw_decode(buffer)
             yield obj
             buffer = buffer[pos:].strip()
-            
+
         except json.JSONDecodeError:
             chunk = f.read(1024 * 64)
             if not chunk: break
             buffer += chunk
 
 def stream_loader(path: str):
-    """Detektē formātu un straumē ierakstus."""
+    """Detects format and streams records."""
     with open(path, "r", encoding="utf-8") as f:
         first_char = ""
         while not first_char:
             c = f.read(1)
             if not c: break
             if not c.isspace(): first_char = c
-        
+
         f.seek(0)
         if first_char == '[':
             yield from stream_json_array(f)
         else:
-            # JSONL režīms
             for line in f:
                 line = line.strip()
                 if line:
                     try:
                         yield json.loads(line)
-                    except:
+                    except Exception:
                         pass
 
 def main():
-    parser = argparse.ArgumentParser(description="JSON/JSONL Filtrs (Streaming)")
+    parser = argparse.ArgumentParser(description="JSON/JSONL Filter (Streaming)")
     parser.add_argument("--input",         required=True)
     parser.add_argument("--output",        required=True)
     parser.add_argument("--domain",        default="nav")
@@ -145,16 +144,16 @@ def main():
     parser.add_argument("--format",        default="alpaca", choices=["alpaca","messages","jsonl"])
     parser.add_argument("--include-words", default="")
     parser.add_argument("--exclude-words", default="")
-    parser.add_argument("--append", action="store_true", help="Pievienot datus esošajam failam")
+    parser.add_argument("--append", action="store_true", help="Append to existing file")
     args = parser.parse_args()
 
     print(f"--- Oxygen Streaming Filter ---")
     print(f"CWD: {os.getcwd()}")
-    print(f"Ievade: {args.input}")
-    print(f"Izvade: {os.path.abspath(args.output)}")
-    
+    print(f"Input : {args.input}")
+    print(f"Output: {os.path.abspath(args.output)}")
+
     if not os.path.exists(args.input):
-        print(f"Kluda: fails nav atrasts: {args.input}")
+        print(f"Error: file not found: {args.input}")
         return
 
     include_words = [w.strip().lower() for w in args.include_words.split(",") if w.strip()]
@@ -163,12 +162,13 @@ def main():
     stats = {"total": 0, "saved": 0, "skipped": 0, "duplicates": 0, "domain": 0, "length": 0, "format": 0, "first": True}
     seen_hashes = set()
     found_keys = set()
-    
+
     mode = "a" if args.append and os.path.exists(args.output) else "w"
     if mode == "a":
         with open(args.output, "rb+") as f_tmp:
             f_tmp.seek(0, 2)
             pos = f_tmp.tell()
+            found_bracket = False
             while pos > 0:
                 pos -= 1
                 f_tmp.seek(pos)
@@ -176,28 +176,32 @@ def main():
                 if char == b"]":
                     f_tmp.truncate(pos)
                     stats["first"] = False
+                    found_bracket = True
                     break
-            else:
+            # FIX: previously silently overwrote file without warning the user
+            if not found_bracket:
+                print(f"WARNING: File '{args.output}' is not a valid JSON array (no ']' found).")
+                print(f"  Append mode cancelled — file will be overwritten.")
                 mode = "w"
 
     start_time = time.time()
-    
+
     with open(args.output, mode, encoding="utf-8") as out_f:
         if mode == "w" and args.format != "jsonl":
             out_f.write("[\n")
-        
+
         for rec in stream_loader(args.input):
             stats["total"] += 1
-            
+
             for k in rec.keys(): found_keys.add(k)
-            
+
             instr, inp, output_text = get_text(rec)
-            
+
             if not instr.strip() or not output_text.strip():
                 stats["format"] += 1
                 stats["skipped"] += 1
                 continue
-                
+
             full_text = f"{instr} {inp} {output_text}".lower()
 
             if args.domain != "nav" and not matches_domain(full_text, args.domain):
@@ -210,15 +214,17 @@ def main():
                 stats["skipped"] += 1; continue
             if exclude_words and any(w in full_text for w in exclude_words):
                 stats["skipped"] += 1; continue
-            
+
             if args.remove_dupes:
                 key = instr.strip()[:200]
                 if key in seen_hashes:
                     stats["duplicates"] += 1; stats["skipped"] += 1; continue
                 seen_hashes.add(key)
 
-            if args.format == "messages": res_obj = to_messages(instr, inp, output_text)
-            else: res_obj = to_alpaca(instr, inp, output_text)
+            if args.format == "messages":
+                res_obj = to_messages(instr, inp, output_text)
+            else:
+                res_obj = to_alpaca(instr, inp, output_text)
 
             if args.format == "jsonl":
                 out_f.write(json.dumps(res_obj, ensure_ascii=False) + "\n")
@@ -226,10 +232,10 @@ def main():
                 if not stats["first"]: out_f.write(",\n")
                 out_f.write("  " + json.dumps(res_obj, ensure_ascii=False))
                 stats["first"] = False
-            
+
             stats["saved"] += 1
             if (stats["total"] % 1000) == 0:
-                print(f"  Apstrādāti: {stats['total']}... (Saglabāti: {stats['saved']})", end="\r")
+                print(f"  Processed: {stats['total']}... (Saved: {stats['saved']})", end="\r")
 
             if args.max_records > 0 and stats["saved"] >= args.max_records:
                 break
@@ -238,22 +244,22 @@ def main():
             out_f.write("\n]")
 
     duration = time.time() - start_time
-    print(f"\n\n--- Filtrēšana pabeigta ({duration:.1f}s) ---")
-    print(f"Kopā lasīti: {stats['total']}")
-    print(f"Saglabāti  : {stats['saved']}")
-    print(f"Izlaisti   : {stats['skipped']}")
-    print(f"  - Dublejumi: {stats['duplicates']}")
-    print(f"  - Domens   : {stats['domain']}")
-    print(f"  - Garums   : {stats['length']}")
-    print(f"  - Formāts  : {stats['format']} (tukši lauki)")
-    
+    print(f"\n\n--- Filtering complete ({duration:.1f}s) ---")
+    print(f"Total read : {stats['total']}")
+    print(f"Saved      : {stats['saved']}")
+    print(f"Skipped    : {stats['skipped']}")
+    print(f"  - Duplicates : {stats['duplicates']}")
+    print(f"  - Domain     : {stats['domain']}")
+    print(f"  - Length     : {stats['length']}")
+    print(f"  - Format     : {stats['format']} (empty fields)")
+
     if stats["saved"] == 0 and stats["total"] > 0:
-        print(f"\nBRĪDINĀJUMS: Neviens ieraksts netika saglabāts!")
-        print(f"Failā atrastie lauki (keys): {list(found_keys)}")
-        print(f"Pārbaudiet, vai skripts prot nolasīt šos laukus (get_text funkcija).")
-    
+        print(f"\nWARNING: No records were saved!")
+        print(f"Fields found in file (keys): {list(found_keys)}")
+        print(f"Check that the script can read these fields (get_text function).")
+
     size_mb = os.path.getsize(args.output) / 1024 / 1024
-    print(f"\nFAILS SAGLABĀTS: {os.path.abspath(args.output)} ({size_mb:.2f} MB)")
+    print(f"\nFILE SAVED: {os.path.abspath(args.output)} ({size_mb:.2f} MB)")
 
 if __name__ == "__main__":
     main()
