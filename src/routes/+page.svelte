@@ -66,6 +66,7 @@
   // --- Tab specific states ---
   let maxMb         = $state(50);
   let filterFile    = $state("");
+  let filterOutput  = $state("filtered_output.json");
   let filterDomain  = $state("nav");
   let filterMinOut  = $state(50);
   let filterMinInstr = $state(10);
@@ -77,6 +78,7 @@
   let filterExclude  = $state("");
 
   let varFile       = $state("");
+  let varOutput     = $state("variations_output.json");
   let varApiKey     = $state("");
   let varCount      = $state(3);
   let varMaxSource  = $state(100);
@@ -85,6 +87,7 @@
 
   // --- Score state ---
   let scoreFile      = $state("filtered_output.json");
+  let scoreOutput    = $state("scored_output.json");
   let scoreMinScore  = $state(5);
   let scoreTop       = $state(0);
   let scoreStatsOnly = $state(false);
@@ -95,6 +98,7 @@
 
   // --- Language state ---
   let langFile      = $state("alpaca_merged.json");
+  let langOutput    = $state("lang_filtered.json");
   let langSelected  = $state<string[]>(["en", "lv"]);
   let langAutoMode  = $state(false);
   let langStatsOnly = $state(false);
@@ -153,6 +157,21 @@
   function appendLog(text: string) { log += text + "\n"; }
   function clearLog() { log = ""; }
   function setTab(id: string) { activeTab = id; clearLog(); }
+
+  function validate(checks: { cond: boolean; msg: string }[]): boolean {
+    for (const c of checks) {
+      if (!c.cond) { appendLog(`⚠️ ${c.msg}`); return false; }
+    }
+    return true;
+  }
+
+  async function pickOutputFile(currentName: string, setter: (v: string) => void) {
+    const path = await save({ defaultPath: currentName, filters: [{ name: "JSON", extensions: ["json", "jsonl"] }] });
+    if (path) {
+      const parts = path.split(/[\/\\]/);
+      setter(parts.pop() || currentName);
+    }
+  }
 
   async function pickFolder() {
     const selected = await open({ directory: true, multiple: false });
@@ -214,34 +233,43 @@
   }
 
   async function runFilter() {
-    if (!filterFile) { appendLog("⚠️ Select file!"); return; }
+    if (!validate([
+      { cond: !!folder,      msg: "Please select a working folder first." },
+      { cond: !!filterFile,  msg: "Please select an input file." },
+      { cond: !!filterOutput, msg: "Please specify an output file name." },
+    ])) return;
     run("filter_dataset", {
-      inputFile: filterFile, 
-      domain: filterDomain,
-      minOutput: filterMinOut, 
-      minInstr: filterMinInstr,
-      maxRecords: filterMaxRec, 
-      removeDupes: filterDupes,
-      requireCode: filterCode, 
-      format: filterFormat,
-      includeWords: filterInclude, 
+      inputFile:    filterFile,
+      outputFile:   filterOutput,
+      domain:       filterDomain,
+      minOutput:    filterMinOut,
+      minInstr:     filterMinInstr,
+      maxRecords:   filterMaxRec,
+      removeDupes:  filterDupes,
+      requireCode:  filterCode,
+      format:       filterFormat,
+      includeWords: filterInclude,
       excludeWords: filterExclude,
-      appendMode: true
     });
   }
 
   async function runScore() {
-    if (!scoreFile) return;
+    if (!validate([
+      { cond: !!folder,      msg: "Please select a working folder first." },
+      { cond: !!scoreFile,   msg: "Please select an input file." },
+      { cond: !!scoreOutput, msg: "Please specify an output file name." },
+    ])) return;
     running = true; clearLog();
     appendLog(`⭐ Scoring: ${scoreFile}...`);
     try {
       const res = await invoke("score_dataset", {
-        folder, 
-        inputFile: scoreFile,
-        minScore: scoreMinScore,
-        maxScore: 10,
-        top: scoreTop,
-        statsOnly: scoreStatsOnly
+        folder,
+        inputFile:  scoreFile,
+        outputFile: scoreOutput,
+        minScore:   scoreMinScore,
+        maxScore:   10,
+        top:        scoreTop,
+        statsOnly:  scoreStatsOnly,
       });
       const data = JSON.parse(res as string);
       scoreDist = data.distribution;
@@ -260,17 +288,22 @@
   }
 
   async function runLangFilter() {
-    if (!langFile) return;
+    if (!validate([
+      { cond: !!folder,     msg: "Please select a working folder first." },
+      { cond: !!langFile,   msg: "Please select an input file." },
+      { cond: !!langOutput, msg: "Please specify an output file name." },
+    ])) return;
     running = true; clearLog();
     appendLog(`🌍 Analyzing languages: ${langFile}...`);
     try {
       const res = await invoke("filter_language", {
-        folder, 
-        inputFile: langFile,
-        lang: langSelected.join(","), 
-        field: langField,
-        statsOnly: langStatsOnly,
-        addField: langAutoMode
+        folder,
+        inputFile:  langFile,
+        outputFile: langOutput,
+        lang:       langSelected.join(","),
+        field:      langField,
+        statsOnly:  langStatsOnly,
+        addField:   langAutoMode,
       });
       const data = JSON.parse(res as string);
       langStats = data.stats;
@@ -292,27 +325,39 @@
   }
 
   async function runSmartParse() {
-    if (!parseFile) return;
+    if (!validate([
+      { cond: !!folder,    msg: "Please select a working folder first." },
+      { cond: !!parseFile, msg: "Please select a file to analyze." },
+    ])) return;
     run("smart_parse", { inputFile: parseFile });
   }
 
   async function runVariations() {
-    if (!varFile || !varApiKey) return;
+    if (!validate([
+      { cond: !!folder,     msg: "Please select a working folder first." },
+      { cond: !!varFile,    msg: "Please select a source file." },
+      { cond: !!varApiKey,  msg: "Please enter your Anthropic API key." },
+      { cond: !!varOutput,  msg: "Please specify an output file name." },
+    ])) return;
     run("generate_variations", {
-      inputFile: varFile, 
-      apiKey: varApiKey,
-      count: varCount, 
-      maxSource: varMaxSource,
-      style: varStyle, 
-      delay: varDelay
+      inputFile:  varFile,
+      outputFile: varOutput,
+      apiKey:     varApiKey,
+      count:      varCount,
+      maxSource:  varMaxSource,
+      style:      varStyle,
+      delay:      varDelay,
     });
   }
 
   async function runScraper() {
-    if (!scrapeUrl) return;
+    if (!validate([
+      { cond: !!folder,    msg: "Please select a working folder first." },
+      { cond: !!scrapeUrl, msg: "Please enter a dataset URL or HuggingFace ID." },
+    ])) return;
     run("scrape_dataset", {
       url: scrapeUrl, hfToken: scrapeToken,
-      split: scrapeSplit, maxRows: scrapeMaxRows, retries: scrapeRetries
+      split: scrapeSplit, maxRows: scrapeMaxRows, retries: scrapeRetries,
     });
   }
 
@@ -519,10 +564,17 @@
         </div>
         <div class="form-grid">
           <div class="form-row">
-            <span class="row-label">📄 Input file</span>
+            <span class="row-label">📄 Input File</span>
             <div class="file-pick-group">
-              <input type="text" class="form-input" placeholder="filtered_output.json" bind:value={scoreFile} />
+              <input type="text" class="form-input" placeholder="Select input file..." bind:value={scoreFile} />
               <button class="btn-square" onclick={() => pickFile(v => scoreFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">💾 Output File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={scoreOutput} placeholder="scored_output.json" />
+              <button class="btn-square" onclick={() => pickOutputFile(scoreOutput, v => scoreOutput = v)}>💾</button>
             </div>
           </div>
           <div class="form-row">
@@ -572,8 +624,15 @@
           <div class="form-row">
             <span class="row-label">📄 Source File</span>
             <div class="file-pick-group">
-              <input type="text" class="form-input" bind:value={filterFile} />
+              <input type="text" class="form-input" bind:value={filterFile} placeholder="Select input file..." />
               <button class="btn-square" onclick={() => pickFile(v => filterFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">💾 Output File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={filterOutput} placeholder="filtered_output.json" />
+              <button class="btn-square" onclick={() => pickOutputFile(filterOutput, v => filterOutput = v)}>💾</button>
             </div>
           </div>
           <div class="form-row">
@@ -602,10 +661,17 @@
         </div>
         <div class="form-grid">
           <div class="form-row">
-            <span class="row-label">📄 Input file</span>
+            <span class="row-label">📄 Input File</span>
             <div class="file-pick-group">
-              <input type="text" class="form-input" bind:value={langFile} />
+              <input type="text" class="form-input" bind:value={langFile} placeholder="Select input file..." />
               <button class="btn-square" onclick={() => pickFile(v => langFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">💾 Output File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={langOutput} placeholder="lang_filtered.json" />
+              <button class="btn-square" onclick={() => pickOutputFile(langOutput, v => langOutput = v)}>💾</button>
             </div>
           </div>
           <div class="form-row">
@@ -672,8 +738,15 @@
           <div class="form-row">
             <span class="row-label">📄 Source File</span>
             <div class="file-pick-group">
-              <input type="text" class="form-input" bind:value={varFile} />
+              <input type="text" class="form-input" bind:value={varFile} placeholder="Select source file..." />
               <button class="btn-square" onclick={() => pickFile(v => varFile = v)}>📂</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <span class="row-label">💾 Output File</span>
+            <div class="file-pick-group">
+              <input type="text" class="form-input" bind:value={varOutput} placeholder="variations_output.json" />
+              <button class="btn-square" onclick={() => pickOutputFile(varOutput, v => varOutput = v)}>💾</button>
             </div>
           </div>
           <div class="quality-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">

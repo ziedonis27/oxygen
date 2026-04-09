@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::path::PathBuf;
 
-/// Atrod pieejamo Python izpildāmo failu (python / python3)
+/// Finds available Python executable (python / python3)
 fn find_python() -> String {
     for candidate in &["python", "python3"] {
         if let Ok(out) = Command::new(candidate).arg("--version").output() {
@@ -13,7 +13,7 @@ fn find_python() -> String {
     "python".to_string()
 }
 
-/// Atrod python/ mapi — vispirms blakus .exe, tad darba mapē
+/// Finds python/ directory — first next to .exe, then in working dir
 fn get_scripts_dir() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let exe_dir = exe.parent().unwrap_or(std::path::Path::new("."));
@@ -31,7 +31,7 @@ fn run_python_script(script_name: &str, args: Vec<String>, _working_dir: &str) -
 
     if !script_path.exists() {
         return Err(format!(
-            "Skripts nav atrasts: {}\nParbaudiet instalaciju.",
+            "Script not found: {}\nCheck your installation.",
             script_path.display()
         ));
     }
@@ -44,10 +44,11 @@ fn run_python_script(script_name: &str, args: Vec<String>, _working_dir: &str) -
         cmd.arg(arg);
     }
     cmd.current_dir(&python_dir);
+    cmd.env("PYTHONIOENCODING", "utf-8");
 
     let output = cmd.output().map_err(|e| {
         format!(
-            "Nevar palaist Python ({}).\nParbaudiet, vai Python ir instalets un pievienots PATH.\nKluda: {}",
+            "Cannot run Python ({}).\nCheck that Python is installed and added to PATH.\nError: {}",
             python_cmd, e
         )
     })?;
@@ -62,7 +63,7 @@ fn run_python_script(script_name: &str, args: Vec<String>, _working_dir: &str) -
     }
 }
 
-/// Pārbauda Python un svarīgākās pakotnes
+/// Checks Python and key packages
 #[tauri::command]
 fn check_environment(working_dir: String) -> Result<String, String> {
     let python_cmd = find_python();
@@ -70,7 +71,7 @@ fn check_environment(working_dir: String) -> Result<String, String> {
     let ver = Command::new(&python_cmd)
         .arg("--version")
         .output()
-        .map_err(|_| String::from("Python nav atrasts! Instalejiet Python 3.10+ un pievienojiet PATH."))?;
+        .map_err(|_| String::from("Python not found! Install Python 3.10+ and add it to PATH."))?;
 
     let version = String::from_utf8_lossy(&ver.stdout).to_string()
         + &String::from_utf8_lossy(&ver.stderr).to_string();
@@ -89,24 +90,24 @@ fn check_environment(working_dir: String) -> Result<String, String> {
         }
     }
 
-    let mut result = format!("Python atrasts: {}\n", version.trim());
-    result += &format!("Izmanto: {}\n", python_cmd);
+    let mut result = format!("Python found: {}\n", version.trim());
+    result += &format!("Using: {}\n", python_cmd);
 
     if missing.is_empty() {
-        result += "Visas pakotnes ir instaletas!\n";
+        result += "All packages are installed!\n";
     } else {
-        result += &format!("Trukstosas pakotnes: {}\n", missing.join(", "));
-        result += &format!("Instalejiet: pip install {}\n", missing.join(" "));
+        result += &format!("Missing packages: {}\n", missing.join(", "));
+        result += &format!("Install: pip install {}\n", missing.join(" "));
     }
 
     let python_dir = get_scripts_dir();
     if python_dir.exists() {
-        result += &format!("Python skriptu mape atrasta: {}\n", python_dir.display());
+        result += &format!("Python scripts folder found: {}\n", python_dir.display());
     } else {
-        result += &format!("Python skriptu mape nav atrasta! ({}) Parbaudiet instalaciju.\n", python_dir.display());
+        result += &format!("Python scripts folder not found! ({}) Check your installation.\n", python_dir.display());
     }
 
-    let _ = working_dir; // nav izmantots vairs
+    let _ = working_dir;
     Ok(result)
 }
 
@@ -184,19 +185,28 @@ fn hf_upload(
     private: bool,
     branch: String,
 ) -> Result<String, String> {
-    let input_path = format!("{}\\{}", folder, input_file);
+    // Uses Path::join instead of hardcoded Windows path separator
+    let input_path = std::path::Path::new(&folder).join(&input_file);
     let python_dir = get_scripts_dir();
     let script_path = python_dir.join("hf_upload.py");
     let python_cmd = find_python();
 
+    if !script_path.exists() {
+        return Err(format!(
+            "Skripts nav atrasts: {}\nParbaudiet instalaciju.",
+            script_path.display()
+        ));
+    }
+
     let mut cmd = std::process::Command::new(&python_cmd);
     cmd.arg(&script_path)
-        .arg("--input")   .arg(&input_path)
-        .arg("--repo")    .arg(&repo)
-        .arg("--branch")  .arg(&branch);
+        .arg("--input")  .arg(input_path.to_string_lossy().as_ref())
+        .arg("--repo")   .arg(&repo)
+        .arg("--branch") .arg(&branch);
     if private { cmd.arg("--private"); }
     cmd.env("HF_TOKEN", &token);
     cmd.arg("--token").arg(&token);
+    cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.current_dir(&python_dir);
 
     let output = cmd.output()
@@ -208,7 +218,6 @@ fn hf_upload(
     else { Err(if stderr.is_empty() { stdout } else { stderr }) }
 }
 
-/// Saglabā log failu diskā
 #[tauri::command]
 fn get_dashboard(folder: String) -> Result<String, String> {
     run_python_script("dashboard.py", vec!["--folder".to_string(), folder.clone()], &folder)
@@ -218,13 +227,15 @@ fn get_dashboard(folder: String) -> Result<String, String> {
 fn score_dataset(
     folder: String,
     input_file: String,
+    output_file: String,
     min_score: i32,
     max_score: i32,
     top: i32,
     stats_only: bool,
 ) -> Result<String, String> {
     let input_path  = std::path::Path::new(&folder).join(&input_file);
-    let output_path = std::path::Path::new(&folder).join("scored_output.json");
+    let out_name    = if output_file.is_empty() { "scored_output.json".to_string() } else { output_file };
+    let output_path = std::path::Path::new(&folder).join(&out_name);
 
     let mut args = vec![
         "--input".to_string(),     input_path.to_string_lossy().to_string(),
@@ -242,13 +253,15 @@ fn score_dataset(
 fn filter_language(
     folder: String,
     input_file: String,
+    output_file: String,
     lang: String,
     field: String,
     stats_only: bool,
     add_field: bool,
 ) -> Result<String, String> {
     let input_path  = std::path::Path::new(&folder).join(&input_file);
-    let output_path = std::path::Path::new(&folder).join("lang_filtered.json");
+    let out_name    = if output_file.is_empty() { "lang_filtered.json".to_string() } else { output_file };
+    let output_path = std::path::Path::new(&folder).join(&out_name);
 
     let mut args = vec![
         "--input".to_string(),  input_path.to_string_lossy().to_string(),
@@ -298,6 +311,7 @@ fn merge_alpaca(folder: String) -> Result<String, String> {
 fn filter_dataset(
     folder: String,
     input_file: String,
+    output_file: String,
     domain: String,
     min_output: i32,
     min_instr: i32,
@@ -309,7 +323,8 @@ fn filter_dataset(
     exclude_words: String,
 ) -> Result<String, String> {
     let input_path  = std::path::Path::new(&folder).join(&input_file);
-    let output_path = std::path::Path::new(&folder).join("filtered_output.json");
+    let out_name    = if output_file.is_empty() { "filtered_output.json".to_string() } else { output_file };
+    let output_path = std::path::Path::new(&folder).join(&out_name);
 
     let mut args = vec![
         "--input".to_string(),       input_path.to_string_lossy().to_string(),
@@ -339,6 +354,7 @@ fn smart_parse(folder: String, input_file: String) -> Result<String, String> {
 fn generate_variations(
     folder: String,
     input_file: String,
+    output_file: String,
     api_key: String,
     count: i32,
     max_source: i32,
@@ -346,30 +362,33 @@ fn generate_variations(
     delay: f64,
 ) -> Result<String, String> {
     let input_path  = std::path::Path::new(&folder).join(&input_file);
-    let output_path = std::path::Path::new(&folder).join("variations_output.json");
-
-    let cmd_args = vec![
-        "--input".to_string(),      input_path.to_string_lossy().to_string(),
-        "--output".to_string(),     output_path.to_string_lossy().to_string(),
-        "--count".to_string(),      count.to_string(),
-        "--max-source".to_string(), max_source.to_string(),
-        "--style".to_string(),      style,
-        "--delay".to_string(),      delay.to_string(),
-    ];
+    let out_name    = if output_file.is_empty() { "variations_output.json".to_string() } else { output_file };
+    let output_path = std::path::Path::new(&folder).join(&out_name);
 
     let python_dir = get_scripts_dir();
     let script_path = python_dir.join("generate_variations.py");
     let python_cmd = find_python();
 
-    let mut cmd = Command::new(&python_cmd);
-    cmd.arg(&script_path);
-    for arg in &cmd_args {
-        cmd.arg(arg);
+    if !script_path.exists() {
+        return Err(format!(
+            "Script not found: {}\nCheck your installation.",
+            script_path.display()
+        ));
     }
+
+    let mut cmd = Command::new(&python_cmd);
+    cmd.arg(&script_path)
+        .arg("--input")      .arg(input_path.to_string_lossy().as_ref())
+        .arg("--output")     .arg(output_path.to_string_lossy().as_ref())
+        .arg("--count")      .arg(count.to_string())
+        .arg("--max-source") .arg(max_source.to_string())
+        .arg("--style")      .arg(&style)
+        .arg("--delay")      .arg(delay.to_string());
     cmd.env("ANTHROPIC_API_KEY", &api_key);
+    cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.current_dir(&python_dir);
 
-    let output = cmd.output().map_err(|e| format!("Nevar palaist Python: {}", e))?;
+    let output = cmd.output().map_err(|e| format!("Cannot run Python: {}", e))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
