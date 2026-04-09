@@ -80,6 +80,8 @@
   let varFile       = $state("");
   let varOutput     = $state("variations_output.json");
   let varApiKey     = $state("");
+  let varKeyStored  = $state(false);
+  let varKeySaving  = $state(false);
   let varCount      = $state(3);
   let varMaxSource  = $state(100);
   let varStyle      = $state("mixed");
@@ -194,10 +196,37 @@
     }
   }
 
-  onMount(() => {
+  onMount(async () => {
     const last = localStorage.getItem("oxygen_last_folder");
     if (last) { folder = last; loadDashboard(); }
+
+    // Check if API key is stored in OS keychain
+    try {
+      const stored = await invoke<string>("get_api_key");
+      varKeyStored = stored !== "no_key" && stored.length > 0;
+    } catch { varKeyStored = false; }
   });
+
+  async function saveApiKey() {
+    if (!varApiKey.trim()) { appendLog("⚠️ Enter an API key first."); return; }
+    varKeySaving = true;
+    try {
+      await invoke("set_api_key", { key: varApiKey.trim() });
+      varKeyStored = true;
+      varApiKey = "";
+      appendLog("🔐 API key saved to system keychain.");
+    } catch (e) { appendLog(`❌ Failed to save key: ${e}`); }
+    varKeySaving = false;
+  }
+
+  async function clearApiKey() {
+    try {
+      await invoke("delete_api_key");
+      varKeyStored = false;
+      varApiKey = "";
+      appendLog("🗑️ API key removed from keychain.");
+    } catch (e) { appendLog(`❌ Failed to remove key: ${e}`); }
+  }
 
   // --- Actions ---
   async function loadDashboard() {
@@ -334,15 +363,26 @@
 
   async function runVariations() {
     if (!validate([
-      { cond: !!folder,     msg: "Please select a working folder first." },
-      { cond: !!varFile,    msg: "Please select a source file." },
-      { cond: !!varApiKey,  msg: "Please enter your Anthropic API key." },
-      { cond: !!varOutput,  msg: "Please specify an output file name." },
+      { cond: !!folder,                    msg: "Please select a working folder first." },
+      { cond: !!varFile,                   msg: "Please select a source file." },
+      { cond: !!varOutput,                 msg: "Please specify an output file name." },
+      { cond: !!varApiKey || varKeyStored, msg: "Please enter your Anthropic API key or save one to keychain." },
     ])) return;
+
+    // Load key from keychain if field is empty
+    let apiKey = varApiKey.trim();
+    if (!apiKey && varKeyStored) {
+      try {
+        apiKey = await invoke<string>("get_api_key");
+      } catch {
+        appendLog("❌ Could not retrieve API key from keychain."); return;
+      }
+    }
+
     run("generate_variations", {
       inputFile:  varFile,
       outputFile: varOutput,
-      apiKey:     varApiKey,
+      apiKey,
       count:      varCount,
       maxSource:  varMaxSource,
       style:      varStyle,
@@ -733,7 +773,26 @@
         <div class="form-grid">
           <div class="form-row">
             <span class="row-label">🔑 Anthropic API Key</span>
-            <input type="password" class="form-input" placeholder="sk-ant-..." bind:value={varApiKey} />
+            {#if varKeyStored}
+              <div class="keychain-status">
+                <span class="key-badge">🔐 Key saved in system keychain</span>
+                <button class="btn-outline" style="padding: 8px 14px; font-size:13px;" onclick={clearApiKey}>🗑️ Remove</button>
+              </div>
+              <input type="password" class="form-input" placeholder="Enter new key to replace..." bind:value={varApiKey} style="margin-top:8px;" />
+              {#if varApiKey}
+                <button class="btn-primary" style="margin-top:6px; padding:9px 16px;" onclick={saveApiKey} disabled={varKeySaving}>
+                  {varKeySaving ? "Saving..." : "💾 Update in Keychain"}
+                </button>
+              {/if}
+            {:else}
+              <div class="file-pick-group">
+                <input type="password" class="form-input" placeholder="sk-ant-... (will be saved to OS keychain)" bind:value={varApiKey} />
+                <button class="btn-square" onclick={saveApiKey} disabled={varKeySaving || !varApiKey} title="Save to keychain">
+                  {varKeySaving ? "⏳" : "🔐"}
+                </button>
+              </div>
+              <span style="font-size:12px; color:#777; margin-top:4px; display:block;">Key is stored in OS keychain — never written to disk or logs.</span>
+            {/if}
           </div>
           <div class="form-row">
             <span class="row-label">📄 Source File</span>
@@ -1137,4 +1196,19 @@
   }
   .file-name { font-size: 14px; color: rgba(255,255,255,0.88); }
   .file-size { font-size: 13px; font-weight: 600; color: #aaa; }
+
+  .keychain-status { display: flex; align-items: center; gap: 12px; }
+  .key-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(80, 180, 130, 0.15);
+    border: 1px solid rgba(80, 180, 130, 0.3);
+    color: #7ee8b0;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+  }
 </style>

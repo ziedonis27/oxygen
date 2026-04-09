@@ -1,6 +1,33 @@
 use std::process::Command;
 use std::path::PathBuf;
 
+const KEYRING_SERVICE: &str = "oxygen-ml-manager";
+const KEYRING_ACCOUNT: &str = "anthropic-api-key";
+
+#[tauri::command]
+fn set_api_key(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain error: {}", e))?;
+    entry.set_password(&key)
+        .map_err(|e| format!("Failed to save key to keychain: {}", e))
+}
+
+#[tauri::command]
+fn get_api_key() -> Result<String, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain error: {}", e))?;
+    entry.get_password()
+        .map_err(|_| "no_key".to_string())
+}
+
+#[tauri::command]
+fn delete_api_key() -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|e| format!("Keychain error: {}", e))?;
+    let _ = entry.delete_credential();
+    Ok(())
+}
+
 /// Finds available Python executable (python / python3)
 fn find_python() -> String {
     for candidate in &["python", "python3"] {
@@ -428,6 +455,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            set_api_key,
+            get_api_key,
+            delete_api_key,
             check_environment,
             save_log_file,
             get_dashboard,
