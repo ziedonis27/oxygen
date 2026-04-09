@@ -305,8 +305,14 @@ fn filter_language(
 #[tauri::command]
 fn save_log_file(path: String, content: String) -> Result<String, String> {
     std::fs::write(&path, &content)
-        .map_err(|e| format!("Nevar saglabt failu: {}", e))?;
-    Ok(format!("Saglabt: {}", path))
+        .map_err(|e| format!("Failed to save file: {}", e))?;
+    Ok(format!("Saved: {}", path))
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read file: {}", e))
 }
 
 #[tauri::command]
@@ -460,6 +466,7 @@ pub fn run() {
             delete_api_key,
             check_environment,
             save_log_file,
+            read_text_file,
             get_dashboard,
             preview_dataset,
             diff_datasets,

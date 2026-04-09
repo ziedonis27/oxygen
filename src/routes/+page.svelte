@@ -2,6 +2,11 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
+  import { EditorView, basicSetup } from "codemirror";
+  import { json } from "@codemirror/lang-json";
+  import { oneDark } from "@codemirror/theme-one-dark";
+  import { linter, lintGutter, type Diagnostic } from "@codemirror/lint";
+  import { EditorState } from "@codemirror/state";
 
   const APP_VERSION = "1.2.4";
 
@@ -118,6 +123,140 @@
   let prevTotal    = $state(0);
   let prevSelectedIds = $state<string[]>([]);
   let prevExpandedId  = $state<string | null>(null);
+
+  // --- JSON Editor state ---
+  let editorFile   = $state("");
+  let editorSaving = $state(false);
+  let editorDirty  = $state(false);
+  let editorValid  = $state<boolean | null>(null);
+  let editorErrors = $state<{ line: number; col: number; msg: string }[]>([]);
+  let editorRecordCount = $state<number | null>(null);
+  let editorContent = $state("");      // persists content across tab switches
+  let editorViewRef: EditorView | null = null;
+
+  function buildEditorExtensions() {
+    const jsonLinter = linter((view): Diagnostic[] => {
+      const doc = view.state.doc.toString();
+      if (!doc.trim()) { editorValid = null; editorErrors = []; editorRecordCount = null; return []; }
+      try {
+        const parsed = JSON.parse(doc);
+        editorValid = true;
+        editorErrors = [];
+        editorRecordCount = Array.isArray(parsed) ? parsed.length : null;
+        return [];
+      } catch (e: any) {
+        editorValid = false;
+        const msg: string = e.message ?? "Invalid JSON";
+        const posMatch = msg.match(/position (\d+)/);
+        if (posMatch) {
+          const pos = Math.min(parseInt(posMatch[1]), doc.length - 1);
+          const line = view.state.doc.lineAt(pos);
+          editorErrors = [{ line: line.number, col: pos - line.from + 1, msg }];
+          return [{ from: line.from, to: line.to, severity: "error", message: msg }];
+        }
+        editorErrors = [{ line: 1, col: 1, msg }];
+        return [{ from: 0, to: Math.min(doc.length, 1), severity: "error", message: msg }];
+      }
+    });
+
+    return [
+      basicSetup,
+      json(),
+      oneDark,
+      jsonLinter,
+      lintGutter(),
+      EditorView.updateListener.of((update) => {
+        if (update.docChanged) {
+          editorContent = update.state.doc.toString();
+          editorDirty = true;
+        }
+      }),
+      EditorView.theme({
+        "&": { height: "420px", borderRadius: "12px", overflow: "hidden" },
+        ".cm-scroller": { fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: "13px", lineHeight: "1.7" },
+        ".cm-focused": { outline: "none" },
+        "&.cm-editor": { background: "rgba(18,18,22,0.95)" },
+      }),
+    ];
+  }
+
+  function initEditorAction(node: HTMLElement) {
+    editorViewRef = new EditorView({
+      state: EditorState.create({
+        doc: editorContent,
+        extensions: buildEditorExtensions(),
+      }),
+      parent: node,
+    });
+    return {
+      destroy() {
+        editorViewRef?.destroy();
+        editorViewRef = null;
+      },
+    };
+  }
+
+  async function editorLoadFile() {
+    const selected = await open({ multiple: false, filters: [{ name: "JSON/JSONL", extensions: ["json", "jsonl"] }] });
+    if (typeof selected !== "string") return;
+    try {
+      const text = await invoke<string>("read_text_file", { path: selected });
+      editorFile = selected;
+      editorContent = text;
+      editorDirty = false;
+      if (editorViewRef) {
+        editorViewRef.dispatch({
+          changes: { from: 0, to: editorViewRef.state.doc.length, insert: text },
+        });
+      }
+    } catch (e) { appendLog(`❌ Editor load error: ${e}`); }
+  }
+
+  async function editorSaveFile() {
+    const content = editorViewRef ? editorViewRef.state.doc.toString() : editorContent;
+    const defaultPath = editorFile || "edited.json";
+    const outPath = await save({ defaultPath, filters: [{ name: "JSON", extensions: ["json", "jsonl"] }] });
+    if (!outPath) return;
+    editorSaving = true;
+    try {
+      await invoke("save_log_file", { path: outPath, content });
+      editorFile = outPath;
+      editorDirty = false;
+      appendLog(`✅ Editor: saved to ${outPath}`);
+    } catch (e) { appendLog(`❌ Editor save error: ${e}`); }
+    editorSaving = false;
+  }
+
+  function editorPrettify() {
+    const view = editorViewRef;
+    if (!view) return;
+    const doc = view.state.doc.toString();
+    try {
+      const pretty = JSON.stringify(JSON.parse(doc), null, 2);
+      view.dispatch({ changes: { from: 0, to: doc.length, insert: pretty } });
+    } catch { appendLog("⚠️ Cannot prettify — JSON has errors."); }
+  }
+
+  function editorMinify() {
+    const view = editorViewRef;
+    if (!view) return;
+    const doc = view.state.doc.toString();
+    try {
+      const min = JSON.stringify(JSON.parse(doc));
+      view.dispatch({ changes: { from: 0, to: doc.length, insert: min } });
+    } catch { appendLog("⚠️ Cannot minify — JSON has errors."); }
+  }
+
+  function editorClear() {
+    if (!editorViewRef) return;
+    const len = editorViewRef.state.doc.length;
+    editorViewRef.dispatch({ changes: { from: 0, to: len, insert: "" } });
+    editorFile = "";
+    editorDirty = false;
+    editorValid = null;
+    editorErrors = [];
+    editorRecordCount = null;
+  }
 
   const DOMAINS = [
     { id: "nav",     label: "🔵 No filter"  },
@@ -475,6 +614,7 @@
       { id: "merge",   label: "🔗 Merge"   },
       { id: "split",   label: "✂️ Split"   },
       { id: "augment", label: "🤖 Aug"     },
+      { id: "editor",  label: "✏️ Edit"    },
     ] as tab}
       <button class="tab-btn {activeTab === tab.id ? 'active' : ''}" onclick={() => setTab(tab.id)}>{tab.label}</button>
     {/each}
@@ -911,6 +1051,84 @@
       </div>
     {/if}
 
+    <!-- JSON EDITOR -->
+    {#if activeTab === "editor"}
+      <div class="card-glass content-card editor-card">
+        <div class="card-header">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:24px;">✏️</span>
+            <div>
+              <h2 style="margin:0">JSON Editor</h2>
+              <p class="card-sub" style="margin:0">Edit, lint and validate JSON files with real-time feedback</p>
+            </div>
+          </div>
+          <div class="editor-status-badge">
+            {#if editorValid === true}
+              <span class="ed-badge valid">✓ Valid JSON</span>
+              {#if editorRecordCount !== null}
+                <span class="ed-badge info">{editorRecordCount.toLocaleString()} records</span>
+              {/if}
+            {:else if editorValid === false}
+              <span class="ed-badge error">✗ Invalid JSON</span>
+            {:else}
+              <span class="ed-badge neutral">— No file</span>
+            {/if}
+            {#if editorDirty}
+              <span class="ed-badge dirty">● Unsaved</span>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="editor-toolbar">
+          <div class="editor-file-path">
+            {#if editorFile}
+              <span class="file-path-text" title={editorFile}>📄 {editorFile.split(/[\/\\]/).pop()}</span>
+            {:else}
+              <span class="file-path-empty">No file loaded</span>
+            {/if}
+          </div>
+          <div class="editor-tools">
+            <button class="ed-tool-btn" onclick={editorLoadFile} title="Open file">📂 Open</button>
+            <button class="ed-tool-btn" onclick={editorSaveFile} disabled={editorSaving} title="Save file">
+              {editorSaving ? "⏳" : "💾"} Save
+            </button>
+            <div class="ed-divider"></div>
+            <button class="ed-tool-btn" onclick={editorPrettify} title="Format JSON (Shift+Alt+F)">⚡ Format</button>
+            <button class="ed-tool-btn" onclick={editorMinify} title="Minify JSON">📦 Minify</button>
+            <div class="ed-divider"></div>
+            <button class="ed-tool-btn danger" onclick={editorClear} title="Clear editor">🗑️ Clear</button>
+          </div>
+        </div>
+
+        <!-- CodeMirror container -->
+        <div class="editor-cm-wrap card-glass-dark" use:initEditorAction></div>
+
+        <!-- Error panel -->
+        {#if editorErrors.length > 0}
+          <div class="editor-error-panel">
+            <div class="error-panel-title">⚠️ Lint Errors</div>
+            {#each editorErrors as err}
+              <div class="error-item">
+                <span class="error-loc">Line {err.line}, Col {err.col}</span>
+                <span class="error-msg">{err.msg}</span>
+              </div>
+            {/each}
+          </div>
+        {:else if editorValid === true}
+          <div class="editor-ok-panel">
+            <span>✅ JSON is valid</span>
+            {#if editorRecordCount !== null}
+              <span>· <strong>{editorRecordCount.toLocaleString()}</strong> top-level records</span>
+            {:else}
+              <span>· Object structure</span>
+            {/if}
+            <span>· {(new TextEncoder().encode(editorContent).length / 1024).toFixed(1)} KB</span>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
   </section>
 
   <section class="log-section card-glass-dark">
@@ -1211,4 +1429,93 @@
     font-weight: 600;
     flex: 1;
   }
+
+  /* ===== JSON EDITOR ===== */
+  .editor-card { gap: 16px; }
+  .editor-status-badge { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ed-badge {
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid transparent;
+  }
+  .ed-badge.valid   { background: rgba(80,180,130,0.15); border-color: rgba(80,180,130,0.3);  color: #7ee8b0; }
+  .ed-badge.error   { background: rgba(220, 80, 80,0.15); border-color: rgba(220,80,80,0.3);  color: #fc8181; }
+  .ed-badge.info    { background: rgba(66,153,225,0.12); border-color: rgba(66,153,225,0.25); color: #90cdf4; }
+  .ed-badge.dirty   { background: rgba(246,173,85,0.12); border-color: rgba(246,173,85,0.25); color: #f6ad55; }
+  .ed-badge.neutral { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.1); color: #777; }
+
+  .editor-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 10px 16px;
+  }
+  .editor-file-path { flex: 1; overflow: hidden; }
+  .file-path-text {
+    font-family: 'JetBrains Mono','Fira Code',monospace;
+    font-size: 12px;
+    color: #90cdf4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+  }
+  .file-path-empty { font-size: 12px; color: #555; }
+  .editor-tools { display: flex; align-items: center; gap: 6px; }
+  .ed-tool-btn {
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #d0d0d0;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .ed-tool-btn:hover:not(:disabled) { background: rgba(255,255,255,0.14); color: #fff; }
+  .ed-tool-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ed-tool-btn.danger:hover { background: rgba(220,80,80,0.18); border-color: rgba(220,80,80,0.3); color: #fc8181; }
+  .ed-divider { width: 1px; height: 22px; background: rgba(255,255,255,0.1); margin: 0 4px; }
+
+  .editor-cm-wrap {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  :global(.editor-cm-wrap .cm-editor) { height: 420px; }
+  :global(.editor-cm-wrap .cm-scroller) { overflow: auto; }
+
+  .editor-error-panel {
+    background: rgba(220,80,80,0.08);
+    border: 1px solid rgba(220,80,80,0.25);
+    border-radius: 10px;
+    padding: 14px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .error-panel-title { font-size: 12px; font-weight: 700; color: #fc8181; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+  .error-item { display: flex; gap: 12px; align-items: baseline; }
+  .error-loc { font-family: 'JetBrains Mono','Fira Code',monospace; font-size: 12px; color: #f6ad55; font-weight: 700; white-space: nowrap; }
+  .error-msg { font-size: 13px; color: #fca5a5; }
+
+  .editor-ok-panel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(80,180,130,0.07);
+    border: 1px solid rgba(80,180,130,0.2);
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 13px;
+    color: #7ee8b0;
+  }
+  .editor-ok-panel strong { color: #9ef0c0; }
 </style>
